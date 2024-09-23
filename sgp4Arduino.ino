@@ -1,4 +1,13 @@
-#include <SparkFun_SGP4_Arduino_Library.h>
+#include <Sgp4.h>
+#include <brent.h>
+#include <sgp4coord.h>
+#include <sgp4ext.h>
+#include <sgp4io.h>
+#include <sgp4pred.h>
+#include <sgp4unit.h>
+#include <visible.h>
+
+//#include <SparkFun_SGP4_Arduino_Library.h>
 #include <TimeLib.h>
 
 // Define constants
@@ -9,7 +18,9 @@ const float MIN_ELEVATION = 45.0; // degrees
 const int MAX_SATELLITES = 700;
 
 // Create SGP4 object
-sgp4 sat;
+
+Sgp4 sat;
+//sat = new Sgp4();
 
 // Struct to hold satellite data
 struct Satellite {
@@ -27,6 +38,11 @@ const Satellite satellites[MAX_SATELLITES] PROGMEM = {
 };
 
 void setup() {
+
+  char satname[] = "ISS (ZARYA)";
+  char tle_line1[] = "1 25544U 98067A   16065.25775256 -.00164574  00000-0 -25195-2 0  9990";
+  char tle_line2[] = "2 25544  51.6436 216.3171 0002750 185.0333 238.0864 15.54246933988812";
+  sat.init(satname,tle_line1,tle_line2);
   Serial.begin(115200);
   while (!Serial); // Wait for Serial to be ready
 
