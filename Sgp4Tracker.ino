@@ -12,10 +12,12 @@ unsigned long framerate;
 
 int year; int mon; int day; int hr; int minute; double sec;
 
+bool continueRunning = true; // Flag to control the main loop
+
 //print satellite info
 void Second_Tick()
 {
-  invjday(sat.satJd, timezone, true, year, mon, day, hr, minute, sec); //convert Julain date to calendar date
+  invjday(sat.satJd, timezone, true, year, mon, day, hr, minute, sec); //convert Julian date to calendar date
   //Print satellite info
   Serial.println(String(day) + '/' + String(mon) + '/' + String(year) + ' ' + String(hr) + ':' + String(minute) + ':' + String(sec));
   Serial.println("azimuth = " + String(sat.satAz) + " elevation = " + String(sat.satEl) + " distance = " + String(sat.satDist));
@@ -37,6 +39,13 @@ void Second_Tick()
   Serial.println();
      
   framerate = 0;
+
+  // Check if elevation is below 25 degrees
+  if (sat.satEl < 25.0) {
+    Serial.println("WARNING: Satellite elevation is below 25 degrees!");
+    Serial.println("Stopping the program.");
+    continueRunning = false; // Set flag to stop the main loop
+  }
 }
 
 void setup() {
@@ -61,6 +70,11 @@ void setup() {
 }
 
 void loop() {
+  if (!continueRunning) {
+    // If continueRunning is false, stop the loop
+    return;
+  }
+
   unsigned long currentMillis = millis();
 
   //If 1 second passed, update satellite position and call Second_Tick
