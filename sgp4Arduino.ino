@@ -1,4 +1,6 @@
 #include <Sgp4.h>
+#include <SD.h>
+#include <SPI.h>
 #include <brent.h>
 #include <sgp4coord.h>
 #include <sgp4ext.h>
@@ -31,9 +33,10 @@ struct Satellite {
 
 // Array to hold satellite data (in program memory)
 const Satellite satellites[MAX_SATELLITES] PROGMEM = {
-  {"sample", 
+  {"ISS (ZARYA)", 
    "1 25544U 98067A   24015.50555961  .00014393  00000+0  26320-3 0  9990",
    "2 25544  51.6415 174.3296 0005936  60.6159 110.5456 15.49564479432227"},
+  {}
   // Add more satellites here...
 };
 
@@ -57,6 +60,10 @@ void loop() {
 
 void selectClosestSatellite() {
   
+}
+
+void Motion() {
+
 }
 
 float calculateElevation(float x, float y, float z) {
