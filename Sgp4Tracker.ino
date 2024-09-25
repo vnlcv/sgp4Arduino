@@ -1,3 +1,8 @@
+/*This is the Closed Loop to determine the beam lookup angle for a satellite.
+It takes one satellite TLE/NORAD data from SD card and runs SGP4.
+Output azimuth and elevation angles of the satellite
+The code stops running when the satellite has an elevation angle below 45 degrees.
+*/
 #include <Sgp4.h>
 
 //Create object
@@ -40,9 +45,9 @@ void Second_Tick()
      
   framerate = 0;
 
-  // Check if elevation is below 25 degrees
-  if (sat.satEl < 25.0) {
-    Serial.println("WARNING: Satellite elevation is below 25 degrees!");
+  // Check if elevation is below 45 degrees
+  if (sat.satEl < 45.0) {
+    Serial.println("WARNING: Satellite elevation angle is below 45 degrees!");
     Serial.println("Stopping the program.");
     continueRunning = false; // Set flag to stop the main loop
   }
