@@ -1,4 +1,5 @@
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
+#include <Ticker.h>
 #include <Wire.h>
 #include <Sgp4.h>
 #include <SD.h>
@@ -10,19 +11,30 @@
 #include <sgp4pred.h>
 #include <sgp4unit.h>
 #include <visible.h>
-#include <TimeLib.h>
+//#include <TimeLib.h>
 
+enum State {
+  TRACKING,
+  SEARCHING
+};
+State currentState = SEARCHING;
 Sgp4 sat;
 File TLEFile;
 SFE_UBLOX_GNSS myGNSS;
 long lastTime = 0;
+unsigned long unixtime = 1458950400;
+int timezone = 12 ;  //utc + 12
+
+int year; int mon; int day; int hr; int minute; double sec;
 
 // Define constants
-const float OBSERVER_LAT = 51.507406923983446;
-const float OBSERVER_LON = -0.12773752212524414;
-const float OBSERVER_ALT = 0.05; // km
-const float MIN_ELEVATION = 45.0; // degrees
+//const float OBSERVER_LAT = 51.507406923983446;
+//const float OBSERVER_LON = -0.12773752212524414;
+//const float OBSERVER_ALT = 0.05; // km
+//const float MIN_ELEVATION = 45.0; // degrees
+const uint16_t GPSI2CAddress = 0x42;
 const int MAX_SATELLITES = 700;
+const int chipSelect = 10; // SD card chip select pin
 
 // Struct to hold satellite data
 struct Satellite {
@@ -30,6 +42,10 @@ struct Satellite {
   char line1[70];
   char line2[70];
 };
+
+Satellite currentSatellite;
+unsigned long lastUpdateTime = 0;
+const unsigned long updateInterval = 1000; //update every second 
 
 // Array to hold satellite data (in program memory)
 const Satellite satellites[MAX_SATELLITES] PROGMEM = {
@@ -81,6 +97,64 @@ const Satellite satellites[MAX_SATELLITES] PROGMEM = {
   // Add more satellites here...
 };
 
+void Predict(int many){
+    
+    passinfo overpass;                       //structure to store overpass info
+    sat.initpredpoint( unixtime , 0.0 );     //finds the startpoint
+    
+    bool error;
+    unsigned long start = millis();
+    for (int i = 0; i<many ; i++){
+        error = sat.nextpass(&overpass,20);     //search for the next overpass, if there are more than 20 maximums below the horizon it returns false
+        delay(0);
+        
+        if ( error == 1){ //no error, prints overpass information
+          
+          invjday(overpass.jdstart ,timezone ,true , year, mon, day, hr, minute, sec);
+          Serial.println("Overpass " + String(day) + ' ' + String(mon) + ' ' + String(year));
+          Serial.println("  Start: az=" + String(overpass.azstart) + "° " + String(hr) + ':' + String(minute) + ':' + String(sec));
+          
+          invjday(overpass.jdmax ,timezone ,true , year, mon, day, hr, minute, sec);
+          Serial.println("  Max: elev=" + String(overpass.maxelevation) + "° " + String(hr) + ':' + String(minute) + ':' + String(sec));
+          
+          invjday(overpass.jdstop ,timezone ,true , year, mon, day, hr, minute, sec);
+          Serial.println("  Stop: az=" + String(overpass.azstop) + "° " + String(hr) + ':' + String(minute) + ':' + String(sec));
+          
+          switch(overpass.transit){
+              case none:
+                  break;
+              case enter:
+                  invjday(overpass.jdtransit ,timezone ,true , year, mon, day, hr, minute, sec);
+                  Serial.println("  Enter earth shadow: " + String(hr) + ':' + String(minute) + ':' + String(sec)); 
+                  break;
+              case leave:
+                  invjday(overpass.jdtransit ,timezone ,true , year, mon, day, hr, minute, sec);
+                  Serial.println("  Leave earth shadow: " + String(hr) + ':' + String(minute) + ':' + String(sec)); 
+                  break;
+          }
+          switch(overpass.sight){
+              case lighted:
+                  Serial.println("  Visible");
+                  break;
+              case eclipsed:
+                  Serial.println("  Not visible");
+                  break;
+              case daylight:
+                  Serial.println("  Daylight");
+                  break;
+          }
+  
+          
+        }else{
+            Serial.println("Prediction error");
+        }
+        delay(0);
+    }
+    unsigned long einde = millis();
+    Serial.println("Time: " + String(einde-start) + " milliseconds");
+    
+}
+
 void setup() {
   //Read SD card for TLE data
   Serial.begin(9600);
@@ -111,49 +185,103 @@ void setup() {
   }
 
   //Read GPS module for user's GPS data
-  Serial2.begin(115200);
-  while (!Serial2) 
-    ; //Wait for user to open terminal
-  Serial2.println("SparkFun u-blox:");
+  Serial.println("SparkFun u-blox:");
 
   Wire.begin();
 
   if (myGNSS.begin() == false) //Conect to the u-blox module using Wire port
   {
-    Serial2.println(F("u-blox GNSS not detected at default I2C address. Please check wiring. Freezing"));
+    Serial.println(F("u-blox GNSS not detected at default I2C address. Please check wiring. Freezing"));
     while(1)
       ;
   }
 
   myGNSS.setI2COutput(COM_TYPE_UBX); //set the I2C port to output UBX only (turn off NMEA noise)
-
-
-
-  //sat.init(satname,tle_line1,tle_line2);
+  myGNSS.saveConfigSelective(VAL_CFG_SUBSEC_IOPORT); // Save the communications port settings to flash and BBR
   
-
-  // Set the current time (replace with actual time setting method)
-  setTime(0, 0, 0, 1, 1, 2024); // 00:00:00 January 1, 2024
 }
 
 void loop() {
-  selectClosestSatellite();
-  delay(60000); // Update every minute
-}
-
-void selectClosestSatellite() {
   
+  switch (currentState) {
+    case TRACKING:
+      if (millis() - lastUpdateTime >= updateInterval) {
+        trackSatellite();
+        lastUpdateTime = millis();
+      }
+      if (!isSatelliteVisible()) {
+        currentState = SEARCHING;
+      }
+      break;
+      
+    case SEARCHING:
+      if (selectClosestSatellite()) {
+        currentState = TRACKING;
+      }
+      break;
+  }
 }
 
-void Motion() {
+bool selectClosestSatellite() {
+  TLEFile = SD.open("TLE.txt");
+  if (!TLEFile) {
+    Serial.println("Error opening TLE file");
+    return false;
+  }
+  
+  while (TLEFile.available()) {
+    // Read TLE data for next satellite
+    readTLE(currentSatellite);
+
+    //TODO USE SGP4 and satellite's TLE to check if it will overpass soon, using Predict()?
+    
+    // Initialize satellite with new TLE data
+    sat.init(currentSatellite.name, currentSatellite.line1, currentSatellite.line2);
+    
+    // Set observer position from GPS data
+    sat.site(myGNSS.getLatitude(), myGNSS.getLongitude(), myGNSS.getAltitude());
+    
+    // Check if this satellite will pass overhead soon
+    if (willPassOverhead()) { //TODO WRITE THIS!!!
+      TLEFile.close();
+      return true;
+    }
+  }
+  
+  TLEFile.close();
+  return false;
+}
+
+bool willPassOverhead() { //TODO
+  // use Predict() and cycle through array of satellites to determine if it will pass overhead
+  // might need to make parameters a satellite and the current time? 
+
+  return false;
+}
+
+bool isSatelliteVisible() { // TODO
+  // Check if satellite is currently visible; for now just use elevation angle of above 25 degrees
+
+  return true;
+}
+
+void readTLE(Satellite &sat) {
+
+}
+
+void trackSatellite() { // TODO replace with SatTracker.ino's method
+
+}
+
+void Motion() { // TODO
 
 }
 
 float calculateElevation(float x, float y, float z) {
   // Convert ECI to topocentric coordinates (simplified)
-  float dx = x - OBSERVER_LAT;
-  float dy = y - OBSERVER_LON;
-  float dz = z - OBSERVER_ALT;
-  float range = sqrt(dx*dx + dy*dy + dz*dz);
-  return asin(dz / range) * 180.0 / PI;
+  //float dx = x - OBSERVER_LAT;
+  //float dy = y - OBSERVER_LON;
+  //float dz = z - OBSERVER_ALT;
+  //float range = sqrt(dx*dx + dy*dy + dz*dz);
+  //return asin(dz / range) * 180.0 / PI;
 }
