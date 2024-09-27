@@ -52,20 +52,37 @@ void printSatelliteInfo(int index) {
     Serial.println(String(day) + '/' + String(mon) + '/' + String(year) + ' ' + String(hr) + ':' + String(minute) + ':' + String(sec));
     Serial.println("azimuth = " + String(sat.satAz) + " elevation = " + String(sat.satEl) + " distance = " + String(sat.satDist));
     Serial.println("latitude = " + String(sat.satLat) + " longitude = " + String(sat.satLon) + " altitude = " + String(sat.satAlt));
+    switch(sat.satVis){
+        case -2:
+            Serial.println("Visible : Under horizon");
+            break;
+        case -1:
+            Serial.println("Visible : Daylight");
+            break;
+        default:
+            Serial.println("Visible : " + String(sat.satVis));   //0:eclipsed - 1000:visible
+            break;
+    }
     Serial.println();
 }
 
 void Second_Tick() {
-    bool satelliteFound = false;
+    int closestSatIndex = -1;
+    double closestDistance = 1e9;  // Initialize with a very large number
+
     for (int i = 0; i < NUM_SATELLITES; i++) {
         satellites[i].findsat(unixtime);
         if (satellites[i].satEl >= MIN_ELEVATION) {
-            printSatelliteInfo(i);
-            satelliteFound = true;
+            if (satellites[i].satDist < closestDistance) {
+                closestDistance = satellites[i].satDist;
+                closestSatIndex = i;
+            }
         }
     }
     
-    if (!satelliteFound) {
+    if (closestSatIndex != -1) {
+        printSatelliteInfo(closestSatIndex);
+    } else {
         Serial.println("No satellites above " + String(MIN_ELEVATION) + " degrees elevation.");
     }
     
@@ -79,10 +96,20 @@ void setup() {
     Serial.begin(115200);
     Serial.println();
   
-    // Set observer location
+    // Set observer location and initialize satellites
     for (int i = 0; i < NUM_SATELLITES; i++) {
         satellites[i].site(-0.5276847, 166.9359231, 34);
-        satellites[i].init(satNames[i], tleLine1[i], tleLine2[i]);
+        
+        // Create temporary non-const copies of the TLE strings
+        char temp1[130];
+        char temp2[130];
+        strncpy(temp1, tleLine1[i], 129);
+        strncpy(temp2, tleLine2[i], 129);
+        temp1[129] = '\0';
+        temp2[129] = '\0';
+        
+        // Initialize the satellite with the temporary strings
+        satellites[i].init(satNames[i], temp1, temp2);
     }
 
     Serial.println("Satellite tracking initialized for 10 satellites.");
