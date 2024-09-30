@@ -11,27 +11,32 @@
 #include <sgp4pred.h>
 #include <sgp4unit.h>
 #include <visible.h>
-//#include <TimeLib.h>
+#include <TimeLib.h>
+
+#define CS_PIN 10 // Chip Select pin for SD card
 
 enum State {
   TRACKING,
   SEARCHING
 };
+uint32_t lastGPSUpdate = 0;
 State currentState = SEARCHING;
 Sgp4 sat;
-File TLEFile;
+File myFile;
 SFE_UBLOX_GNSS myGNSS;
 long lastTime = 0;
-unsigned long unixtime = 1458950400;
-int timezone = 12 ;  //utc + 12
+tmElements_t tm;
+int syear; int smon; int sday; int shr; int sminute; double ssec;
 
-int year; int mon; int day; int hr; int minute; double sec;
+//keeping track of time
+unsigned long previousMillis = 0;
+const long interval = 1000; // Update every 1000 ms
+
+unsigned long unixtime = 1727085850; //starting unix timestamp
+int timezone = 0;  //utc + 0
+unsigned long framerate;
 
 // Define constants
-//const float OBSERVER_LAT = 51.507406923983446;
-//const float OBSERVER_LON = -0.12773752212524414;
-//const float OBSERVER_ALT = 0.05; // km
-//const float MIN_ELEVATION = 45.0; // degrees
 const uint16_t GPSI2CAddress = 0x42;
 const int MAX_SATELLITES = 700;
 const int chipSelect = 10; // SD card chip select pin
@@ -47,58 +52,79 @@ Satellite currentSatellite;
 unsigned long lastUpdateTime = 0;
 const unsigned long updateInterval = 1000; //update every second 
 
+bool continueRunning = true; // Flag to control the main loop
+
 // Array to hold satellite data (in program memory)
 const Satellite satellites[MAX_SATELLITES] PROGMEM = {
   {"ISS (ZARYA)", 
    "1 25544U 98067A   24015.50555961  .00014393  00000+0  26320-3 0  9990",
    "2 25544  51.6415 174.3296 0005936  60.6159 110.5456 15.49564479432227"},
-  {"ONEWEB-0012", 
-   "1 44057U 19010A   24266.50249996  .00000051  00000+0  98916-4 0  9997",
-   "2 44057  87.9170 354.8071 0002128 125.2440 234.8890 13.16594802268316"},
-  {"ONEWEB-0010", 
-   "1 44058U 19010B   24266.52783455  .00000096  00000+0  21725-3 0  9995",
-   "2 44058  87.9175 354.7837 0002526 107.7864 252.3543 13.16593880268368"},
-  {"ONEWEB-0008", 
-   "1 44059U 19010C   24266.55316812  .00001024  00000+0  26458-2 0  9997",
-   "2 44059  87.9171 354.7794 0002017  92.0179 268.1183 13.16593499268481"},
-  {"ONEWEB-0007", 
-   "1 44060U 19010D   24266.61813633  .00000167  00000+0  40951-3 0  9991",
-   "2 44060  87.9110  25.0916 0001828 113.0680 247.0643 13.15548120268207"},
-  {"ONEWEB-0006", 
-   "1 44061U 19010E   24266.62209708  .00000683  00000+0  17789-2 0  9990",
-   "2 44061  87.9099  25.0649 0001956 106.9392 253.1952 13.15546575268258"},
-  {"ONEWEB-0011", 
-   "1 44062U 19010F   24266.82017936 -.00000037  00000+0 -13354-3 0  9993",
-   "2 44062  87.9105  25.0285 0002011  97.8105 262.3254 13.15552120268278"},
-  {"ONEWEB-0013", 
-   "1 45131U 20008A   24266.77994130 -.00000385  00000+0 -11564-2 0  9990",
-   "2 45131  87.8697 180.1009 0000881  77.5417 282.5808 13.09387186223307"},
-  {"ONEWEB-0017", 
-   "1 45132U 20008B   24266.45418600  .00000008  00000+0 -13904-4 0  9992",
-   "2 45132  87.8984 162.2019 0001993  78.5359 281.5992 13.10375145225084"},
-  {"ONEWEB-0020", 
-   "1 45133U 20008C   24266.95882052 -.00000238  00000+0 -71881-3 0  9997",
-   "2 45133  87.8974 162.0877 0001970  73.8093 286.3251 13.10369873225545"},
-  {"ONEWEB-0021", 
-   "1 45134U 20008D   24266.43924266 -.00000498  00000+0 -14640-2 0  9992",
-   "2 45134  87.8989 162.2099 0001690  79.0158 281.1159 13.10372842225785"},
-  {"ONEWEB-0023",            
-  "1 45136U 20008F   24266.68076504 -.00000301  00000+0 -89770-3 0  9994",
-  "2 45136  87.8986 162.1512 0001730  62.6388 297.4915 13.10374589225242"},
-  {"ONEWEB-0024",             
-  "1 45137U 20008G   24266.95715725 -.00000204  00000+0 -62071-3 0  9997",
-  "2 45137  87.8967 162.0743 0001746  76.5990 283.5331 13.10369309225441"},
-  {"ONEWEB-0025",             
-  "1 45138U 20008H   24266.66997620 -.00000732  00000+0 -21340-2 0  9991",
-  "2 45138  87.8978 162.1313 0001696  73.1098 287.0215 13.10373648225737"},
-  {"ONEWEB-0026",             
-  "1 45139U 20008J   24266.96353175  .00000544  00000+0  14996-2 0  9994",
-  "2 45139  87.8964 146.9814 0001909  75.1202 285.0137 13.11417986228240"},
   // Add more satellites here...
 };
 
+double unixToJulian(uint32_t unixTime) {
+  return (unixTime / 86400.0) + 2440587.5;
+}
+
+uint32_t getGPSTime() {
+  uint16_t uyear;
+  uint8_t umonth, uday, uhour, uminute, usecond;
+  uint32_t unixTime = 0;
+
+  if (myGNSS.getDateValid() && myGNSS.getTimeValid()) {
+    uyear = myGNSS.getYear();
+    umonth = myGNSS.getMonth();
+    uday = myGNSS.getDay();
+    uhour = myGNSS.getHour();
+    uminute = myGNSS.getMinute();
+    usecond = myGNSS.getSecond();
+
+    // Convert to Unix timestamp
+    tm.Year = uyear - 1970;
+    tm.Month = umonth;
+    tm.Day = uday;
+    tm.Hour = uhour;
+    tm.Minute = uminute;
+    tm.Second = usecond;
+    unixTime = makeTime(tm);
+  }
+  return unixTime;
+}
+
+void Second_Tick(){
+  invjday(sat.satJd, timezone, true, syear, smon, sday, shr, sminute, ssec);
+  Serial.println("DEBUG: Converted Julian date to calendar date");
+  
+  Serial.println(String(sday) + '/' + String(smon) + '/' + String(syear) + ' ' + String(shr) + ':' + String(sminute) + ':' + String(ssec));
+  Serial.println("azimuth = " + String(sat.satAz) + " elevation = " + String(sat.satEl) + " distance = " + String(sat.satDist));
+  Serial.println("latitude = " + String(sat.satLat) + " longitude = " + String(sat.satLon) + " altitude = " + String(sat.satAlt));
+  
+  Serial.print("DEBUG: Visibility status - ");
+  switch(sat.satVis){
+    case -2:
+      Serial.println("Under horizon");
+      break;
+    case -1:
+      Serial.println("Daylight");
+      break;
+    default:
+      Serial.println(String(sat.satVis) + " (0:eclipsed - 1000:visible)");
+      break;
+  }
+
+  Serial.println("Framerate: " + String(framerate) + " calc/sec");
+  Serial.println();
+     
+  framerate = 0;
+
+  if (sat.satEl < 45.0) {
+    Serial.println("WARNING: Satellite elevation angle is below 45 degrees. Stopping the program.");
+    continueRunning = false;
+  }
+}
+
+//TODO change this method to return some signifier that a satellite will pass over in the next.... hour? 2 hours? some amount of time
 void Predict(int many){
-    
     passinfo overpass;                       //structure to store overpass info
     sat.initpredpoint( unixtime , 0.0 );     //finds the startpoint
     
@@ -110,26 +136,26 @@ void Predict(int many){
         
         if ( error == 1){ //no error, prints overpass information
           
-          invjday(overpass.jdstart ,timezone ,true , year, mon, day, hr, minute, sec);
-          Serial.println("Overpass " + String(day) + ' ' + String(mon) + ' ' + String(year));
-          Serial.println("  Start: az=" + String(overpass.azstart) + "° " + String(hr) + ':' + String(minute) + ':' + String(sec));
+          invjday(overpass.jdstart ,timezone ,true , syear, smon, sday, shr, sminute, ssec);
+          Serial.println("Overpass " + String(sday) + ' ' + String(smon) + ' ' + String(syear));
+          Serial.println("  Start: az=" + String(overpass.azstart) + "° " + String(shr) + ':' + String(sminute) + ':' + String(ssec));
           
-          invjday(overpass.jdmax ,timezone ,true , year, mon, day, hr, minute, sec);
-          Serial.println("  Max: elev=" + String(overpass.maxelevation) + "° " + String(hr) + ':' + String(minute) + ':' + String(sec));
+          invjday(overpass.jdmax ,timezone ,true , syear, smon, sday, shr, sminute, ssec);
+          Serial.println("  Max: elev=" + String(overpass.maxelevation) + "° " + String(shr) + ':' + String(sminute) + ':' + String(ssec));
           
-          invjday(overpass.jdstop ,timezone ,true , year, mon, day, hr, minute, sec);
-          Serial.println("  Stop: az=" + String(overpass.azstop) + "° " + String(hr) + ':' + String(minute) + ':' + String(sec));
+          invjday(overpass.jdstop ,timezone ,true , syear, smon, sday, shr, sminute, ssec);
+          Serial.println("  Stop: az=" + String(overpass.azstop) + "° " + String(shr) + ':' + String(sminute) + ':' + String(ssec));
           
           switch(overpass.transit){
               case none:
                   break;
               case enter:
-                  invjday(overpass.jdtransit ,timezone ,true , year, mon, day, hr, minute, sec);
-                  Serial.println("  Enter earth shadow: " + String(hr) + ':' + String(minute) + ':' + String(sec)); 
+                  invjday(overpass.jdtransit ,timezone ,true , syear, smon, sday, shr, sminute, ssec);
+                  Serial.println("  Enter earth shadow: " + String(shr) + ':' + String(sminute) + ':' + String(ssec)); 
                   break;
               case leave:
-                  invjday(overpass.jdtransit ,timezone ,true , year, mon, day, hr, minute, sec);
-                  Serial.println("  Leave earth shadow: " + String(hr) + ':' + String(minute) + ':' + String(sec)); 
+                  invjday(overpass.jdtransit ,timezone ,true , syear, smon, sday, shr, sminute, ssec);
+                  Serial.println("  Leave earth shadow: " + String(shr) + ':' + String(sminute) + ':' + String(ssec)); 
                   break;
           }
           switch(overpass.sight){
@@ -151,37 +177,106 @@ void Predict(int many){
         delay(0);
     }
     unsigned long einde = millis();
-    Serial.println("Time: " + String(einde-start) + " milliseconds");
-    
+    Serial.println("Time: " + String(einde-start) + " milliseconds"); 
+}
+
+void writeTLEFile() {
+  if (SD.exists("tle.txt")) {
+    SD.remove("tle.txt");
+    Serial.println("DEBUG: Existing tle.txt file removed");
+  }
+
+  myFile = SD.open("tle.txt", FILE_WRITE);
+  if (myFile) {
+    Serial.print("Writing to tle.txt...");
+    myFile.println("ISS (ZARYA)");
+    myFile.println("1 25544U 98067A   24015.50555961  .00014393  00000+0  26320-3 0  9990");
+    myFile.println("2 25544  51.6415 174.3296 0005936  60.6159 110.5456 15.49564479432227");
+    myFile.close();
+    Serial.println("done.");
+  } else {
+    Serial.println("error opening tle.txt for writing");
+  }
+}
+
+void readTLEFile() {
+  myFile = SD.open("tle.txt");
+  if (myFile) {
+    Serial.println("tle.txt contents:");
+    while (myFile.available()) {
+      Serial.write(myFile.read());
+    }
+    myFile.close();
+  } else {
+    Serial.println("error opening tle.txt for reading");
+  }
 }
 
 void setup() {
-  //Read SD card for TLE data
-  Serial.begin(9600);
+  Serial.begin(115200);
   while (!Serial) {
-    ;// Wait for Serial to be ready
+    ; // wait for serial port to connect
   }
-  Serial.print("Initialising SD card...");
-  if (!SD.begin(4)) {
-    Serial.println("initialisation failed");
+  Serial.println("DEBUG: Serial communication initialized");
+
+  sat.site(-0.5276847, 166.9359231, 34); //TODO REPLACE WITH GPS GET LOCATION
+  Serial.println("DEBUG: Observer location set");
+
+  Serial.print("Initializing SD card...");
+  if (!SD.begin(CS_PIN)) {
+    Serial.println("initialization failed!");
+    Serial.println("DEBUG: Check SD card connection and CS_PIN definition");
     while (1);
   }
-  Serial.println("intiialisation done.");
+  Serial.println("initialization done.");
 
-  // open the file to read TLE data. Only one file can be open at a time
-  // so we need to close it when we're done.
-  TLEFile = SD.open("TLE.txt");
-  if (TLEFile) {
-    Serial.println("TLE.txt:");
+  // Write new TLE data to file
+  writeTLEFile();
 
-    //Read from file until there's nothing else in it
-    while (TLEFile.available()) {
-      Serial.write(TLEFile.read());
+  // Read and print TLE data
+  readTLEFile();
+
+  // Initialize satellite with TLE data
+  File tleFile = SD.open("tle.txt");
+  if (tleFile) {
+    String satname = tleFile.readStringUntil('\n');
+    String tle_line1 = tleFile.readStringUntil('\n');
+    String tle_line2 = tleFile.readStringUntil('\n');
+
+    satname.trim();
+    tle_line1.trim();
+    tle_line2.trim();
+
+    tleFile.close();
+    Serial.println("DEBUG: TLE data read and file closed");
+
+    Serial.println("DEBUG: Satellite name: " + satname);
+    Serial.println("DEBUG: TLE Line 1: " + tle_line1);
+    Serial.println("DEBUG: TLE Line 2: " + tle_line2);
+    
+    Serial.println("DEBUG: Length of satname: " + String(satname.length()));
+    Serial.println("DEBUG: Length of tle_line1: " + String(tle_line1.length()));
+    Serial.println("DEBUG: Length of tle_line2: " + String(tle_line2.length()));
+
+    char tle_line1_char[130];
+    char tle_line2_char[130];
+    tle_line1.toCharArray(tle_line1_char, sizeof(tle_line1_char));
+    tle_line2.toCharArray(tle_line2_char, sizeof(tle_line2_char));
+
+    if (sat.init(satname.c_str(), tle_line1_char, tle_line2_char)) {
+      Serial.println("DEBUG: Satellite parameters initialized successfully");
+    } else {
+      Serial.println("ERROR: Failed to initialize satellite parameters");
+      while(1);
     }
-    TLEFile.close();
+
+    double jdC = sat.satrec.jdsatepoch;
+    invjday(jdC, timezone, true, syear, smon, sday, shr, sminute, ssec);
+    Serial.println("Epoch: " + String(sday) + '/' + String(smon) + '/' + String(syear) + ' ' + String(shr) + ':' + String(sminute) + ':' + String(ssec));
+    Serial.println();
   } else {
-    // if the file didn't open, print an error
-    Serial.println("error opening TLE.txt");
+    Serial.println("Error opening tle.txt for satellite initialization");
+    while (1);
   }
 
   //Read GPS module for user's GPS data
@@ -205,10 +300,26 @@ void loop() {
   
   switch (currentState) {
     case TRACKING:
-      if (millis() - lastUpdateTime >= updateInterval) {
-        trackSatellite();
-        lastUpdateTime = millis();
+      // 
+      if (!continueRunning) {
+      Serial.println("DEBUG: Program stopped due to low elevation angle");
+      while(1);
       }
+
+      unsigned long currentMillis = millis();
+
+      if (currentMillis - previousMillis >= interval) {
+      previousMillis = currentMillis;
+
+      Serial.println("DEBUG: Calculating satellite position for unixtime: " + String(unixtime));
+      sat.findsat(unixtime);
+      Second_Tick();
+
+      unixtime += 1;
+      }
+
+      framerate++;
+
       if (!isSatelliteVisible()) {
         currentState = SEARCHING;
       }
@@ -223,15 +334,15 @@ void loop() {
 }
 
 bool selectClosestSatellite() {
-  TLEFile = SD.open("TLE.txt");
-  if (!TLEFile) {
+  myFile = SD.open("TLE.txt");
+  if (!myFile) {
     Serial.println("Error opening TLE file");
     return false;
   }
   
-  while (TLEFile.available()) {
+  while (myFile.available()) {
     // Read TLE data for next satellite
-    readTLE(currentSatellite);
+    readTLEFile();
 
     //TODO USE SGP4 and satellite's TLE to check if it will overpass soon, using Predict()?
     
@@ -242,17 +353,17 @@ bool selectClosestSatellite() {
     sat.site(myGNSS.getLatitude(), myGNSS.getLongitude(), myGNSS.getAltitude());
     
     // Check if this satellite will pass overhead soon
-    if (willPassOverhead()) { //TODO WRITE THIS!!!
-      TLEFile.close();
+    if (willPassOverhead(sat, getGPSTime())) { //TODO WRITE THIS!!!
+      myFile.close();
       return true;
     }
   }
   
-  TLEFile.close();
+  myFile.close();
   return false;
 }
 
-bool willPassOverhead() { //TODO
+bool willPassOverhead(Sgp4 &sat, uint32_t currentTime) { //TODO
   // use Predict() and cycle through array of satellites to determine if it will pass overhead
   // might need to make parameters a satellite and the current time? 
 
@@ -265,23 +376,10 @@ bool isSatelliteVisible() { // TODO
   return true;
 }
 
-void readTLE(Satellite &sat) {
-
-}
-
 void trackSatellite() { // TODO replace with SatTracker.ino's method
 
 }
 
-void Motion() { // TODO
+void Motion(long azimuth, long elevation) { // TODO
 
-}
-
-float calculateElevation(float x, float y, float z) {
-  // Convert ECI to topocentric coordinates (simplified)
-  //float dx = x - OBSERVER_LAT;
-  //float dy = y - OBSERVER_LON;
-  //float dz = z - OBSERVER_ALT;
-  //float range = sqrt(dx*dx + dy*dy + dz*dz);
-  //return asin(dz / range) * 180.0 / PI;
 }
