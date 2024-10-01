@@ -298,36 +298,39 @@ void setup() {
 
 void loop() {
   
-  switch (currentState) {
+  switch (currentState) { //TODO tighten up the logic of this; this is the state machine logic that switches between searching for satellite and tracking
     case TRACKING:
-      // 
-      if (!continueRunning) {
-      Serial.println("DEBUG: Program stopped due to low elevation angle");
-      while(1);
-      }
+      { 
+        if (!continueRunning) {
+        Serial.println("DEBUG: Program stopped due to low elevation angle");
+        while(1);
+        }
 
-      unsigned long currentMillis = millis();
+        unsigned long currentMillis = millis();
 
-      if (currentMillis - previousMillis >= interval) {
-      previousMillis = currentMillis;
+        if (currentMillis - previousMillis >= interval) {
+        previousMillis = currentMillis;
 
-      Serial.println("DEBUG: Calculating satellite position for unixtime: " + String(unixtime));
-      sat.findsat(unixtime);
-      Second_Tick();
+        Serial.println("DEBUG: Calculating satellite position for unixtime: " + String(unixtime));
+        sat.findsat(unixtime);
+        Second_Tick();
 
-      unixtime += 1;
-      }
+        unixtime += 1;
+        }
 
-      framerate++;
+        framerate++;
 
-      if (!isSatelliteVisible()) {
-        currentState = SEARCHING;
+        if (!isSatelliteVisible()) {
+          currentState = SEARCHING;
+        }
       }
       break;
       
-    case SEARCHING:
-      if (selectClosestSatellite()) {
-        currentState = TRACKING;
+    case SEARCHING: //TODO 
+      {
+        if (selectClosestSatellite()) {
+          currentState = TRACKING;
+        }
       }
       break;
   }
