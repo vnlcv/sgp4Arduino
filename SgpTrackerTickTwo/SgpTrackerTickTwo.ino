@@ -1,3 +1,6 @@
+/* It takes one satellite TLE data and runs SGP4 using TickTwo.
+Output azimuth and elevation angles of the satellite.*/
+
 #include <Sgp4.h>
 #include <TickTwo.h>
 
