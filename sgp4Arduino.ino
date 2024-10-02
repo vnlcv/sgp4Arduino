@@ -92,6 +92,8 @@ uint32_t getGPSTime() {
 }
 
 void Second_Tick(){
+  unixtime += 1;
+
   invjday(sat.satJd, timezone, true, syear, smon, sday, shr, sminute, ssec);
   Serial.println("DEBUG: Converted Julian date to calendar date");
   
@@ -305,19 +307,15 @@ void loop() {
         Serial.println("DEBUG: Program stopped due to low elevation angle");
         while(1);
         }
-
         unsigned long currentMillis = millis();
 
         if (currentMillis - previousMillis >= interval) {
-        previousMillis = currentMillis;
-
-        Serial.println("DEBUG: Calculating satellite position for unixtime: " + String(unixtime));
-        sat.findsat(unixtime);
-        Second_Tick();
-
-        unixtime += 1;
+          previousMillis = currentMillis;
+          Second_Tick();
+          Serial.println("DEBUG: Calculating satellite position for unixtime: " + String(unixtime));
         }
-
+        
+        sat.findsat(unixtime);
         framerate++;
 
         if (!isSatelliteVisible()) {
