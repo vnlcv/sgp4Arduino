@@ -1,5 +1,7 @@
-Sgp4Tracker.ino - Takes one satellite TLE data from SD card and run SGP4. Continuously outputs azimuth and elevation angles until satellite is below 45 degrees
+Tracking.ino - This code tracks one satellite using its TLE (Two-Line Element) data using SGP4 algorithm and TickTwo library.
+It calculates and outputs azimuth and elevation angles of the satellite every second.
+It also shows when the satellite is trackable - above 25 degrees.
 
-ReadWriteSgp4Tracker.ino - Writes one satellite TLE data to tle.txt on SD card. Reads TLE data from SD card, reads GPS and time from GPS module, and run SGP4. Continuously outputs azimuth and elevation angles until satellite is below 45 degrees. (time method to be verified, satellite has accelerated orbit)
-
-Sgp4TrackerV2.ino - Select the closest satellite above 45° elevation (contains error, new code in branch project 2232)
+The reference coordinates and reference TLE are used to test the code. 
+User is on equator and satellite orbits over equator (inclination and eccentricity = 0 in TLE). 
+As satellite passes over user, azimuth switches from 270° to 90°.
