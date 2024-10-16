@@ -1,217 +1,278 @@
-/* Satellite Tracking 
+/*
+  Satellite Tracking
 
-This code tracks one satellite using its TLE (Two-Line Element) data using SGP4 algorithm and TickTwo library.
-It calculates and outputs azimuth and elevation angles of the satellite every second.
-It also shows when the satellite is trackable - above 25 degrees.
+  This code tracks a satellite using its TLE (Two-Line Element) data with the SGP4 algorithm
+  and TickTwo library. It calculates and outputs azimuth and elevation angles every second,
+  indicating when the satellite is trackable (above 25 degrees).
 
-The reference coordinates and reference TLE are used to test the code. 
-User is on equator and satellite orbits over equator (inclination and eccentricity = 0 in TLE). 
-As satellite passes over user, azimuth switches from 270° to 90°.
+  Hardware Connections:
+  ---------------------
+  Adafruit 254 MicroSD Card Breakout:
+    - 5V  -> 5V on Arduino
+    - GND  -> GND on Arduino
+    - CLK  -> D13
+    - DO   -> D12
+    - DI   -> D11
+    - CS   -> D10
 
-Adafruit 254 MicroSD card breakout board+ 
--Connect the 5V pin to the 5V pin on the Arduino
--Connect the GND pin to the GND pin on the Arduino
--Connect CLK to pin D13 -Connect DO to pin D12
--Connect DI to pin D11
--Connect CS to pin D10
-
-SparkFun GPS Breakout - NEO-M9N, Chip Antenna (Qwiic) (38400 baud)
--Connect the 5V pin to the 5V pin on the Arduino
--Connect the GND pin to the GND pin on the Arduino
--Connect SDA to pin A4 
--Connect SCL to pin A5
+  SparkFun GPS Breakout - NEO-M9N (Qwiic):
+    - 5V  -> 5V on Arduino
+    - GND -> GND on Arduino
+    - SDA -> A4
+    - SCL -> A5
 */
 
 #include <Sgp4.h>
 #include <TickTwo.h>
-#include <SparkFun_u-blox_GNSS_Arduino_Library.h> // Include GNSS library
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 #include <Wire.h>
 #include <SD.h>
 #include <SPI.h>
 
-const int chipSelect = 10; // Chip Select pin for SD card
+// -------------------- Constants and Definitions --------------------
+const int SD_CS_PIN = 10;                     // Chip Select pin for SD card
+const unsigned long TIMER_INTERVAL_MS = 1000; // Timer interval in milliseconds
+const double TRACKABLE_ELEVATION = 25.0;      // Elevation threshold in degrees
+const char* TLE_FILE_NAME = "tle.txt";         // TLE data file name
 
-Sgp4 sat;
-SFE_UBLOX_GNSS myGNSS; // Create a GNSS object
+// -------------------- Global Objects --------------------
+Sgp4 satellite;
+SFE_UBLOX_GNSS gnss;
 
-// Variables for SGP4
-unsigned long unixtime;
-int timezone = 0; // UTC 
-int framerate;
-int year; int mon; int day; int hr; int minute; double sec;
-bool continueRunning = true; // Bool to control the main loop
+// Forward declaration of the callback function
+void onSecondTick();
 
-void Second_Tick();
-TickTwo timer(Second_Tick, 1000); // Call Second_Tick every 1000ms (1 second)
+// Initialize TickTwo with the callback, interval, repeat count, and resolution
+TickTwo timer(onSecondTick, TIMER_INTERVAL_MS, 0, MILLIS);
 
-// Function to update and display satellite information every second
-void Second_Tick()
-{
-  // Read GPS
-  // Update GPS data
-  if (myGNSS.getGnssFixOk()) {
-    unixtime = myGNSS.getUnixEpoch();
-    double latitude = myGNSS.getLatitude() / 10000000.0;
-    double longitude = myGNSS.getLongitude() / 10000000.0;
-    double altitude = myGNSS.getAltitude() / 1000.0; // Convert to meters
-    
-    sat.site(latitude, longitude, altitude); // Update site location
-    
-    // Print GPS data
-    Serial.println("GPS data");
-    Serial.print("GPS: Lat=");
-    Serial.print(latitude, 6);
-    Serial.print(", Lon=");
-    Serial.print(longitude, 6);
-    Serial.print(", Alt=");
-    Serial.print(altitude, 2);
-    Serial.print("m, SIV=");
-    Serial.println(myGNSS.getSIV());
-    
-    // Print GPS time
-    Serial.print("GPS Time: ");
-    Serial.print(myGNSS.getUnixEpoch());
-    Serial.print(myGNSS.getYear());
-    Serial.print("-");
-    Serial.print(myGNSS.getMonth());
-    Serial.print("-");
-    Serial.print(myGNSS.getDay());
-    Serial.print(" ");
-    Serial.print(myGNSS.getHour());
-    Serial.print(":");
-    Serial.print(myGNSS.getMinute());
-    Serial.print(":");
-    Serial.println(myGNSS.getSecond());
-  } else {
-    Serial.println("Waiting for GPS fix...");
-  }
-       
-  invjday(sat.satJd, timezone, true, year, mon, day, hr, minute, sec); //convert satellite's Julian date to calendar date. sat.satJd depends on unixtime
-  Serial.println(String(day) + '/' + String(mon) + '/' + String(year) + ' ' + String(hr) + ':' + String(minute) + ':' + String(sec));
-  //Satellite TLE
-  Serial.println("TLE data");
-  Serial.println("azimuth = " + String(sat.satAz) + " elevation = " + String(sat.satEl) + " distance = " + String(sat.satDist));
-  Serial.println("latitude = " + String(sat.satLat) + " longitude = " + String(sat.satLon) + " altitude = " + String(sat.satAlt));
+// -------------------- Global Variables --------------------
+unsigned long unixTime = 0;
+int timezoneOffset = 0; // UTC
+int frameRate = 0;
+bool isRunning = true;
 
-  switch(sat.satVis){
-    case -2:
-      Serial.println("Visible : Under horizon"); //elevation < 0
-      break;
-    case -1:
-      Serial.println("Visible : Daylight"); //elevation > 0
-      break;
-    default:
-      Serial.println("Visible : " + String(sat.satVis));   //0:eclipsed, 1000:visible
-      break;
-  }
+// Date and Time Variables
+int year, month, day, hour, minute;
+double secondDouble;
 
-  Serial.println("Framerate: " + String(framerate) + " calc/sec");
-  Serial.println();
-     
-  framerate = 0;// Reset to 0
+// -------------------- Function Prototypes --------------------
+void setupGPS();
+bool initializeSDCard();
+bool loadTLEFromSD();
+void initializeSatellite(const String& satName, char* tleLine1Char, char* tleLine2Char);
+void printGPSData();
+void printSatelliteData();
+void checkTrackable();
 
-  // Check if satellite is trackable (above 25 degrees)
-  if (sat.satEl > 25) {
-    Serial.println("Satellite elevation is above 25 degrees.");
-    Serial.println();
-  } else {
-    Serial.println("Satellite elevation is below 25 degrees.");
-    Serial.println();
-  }
-}
-
+// -------------------- Setup Function --------------------
 void setup() {
   Serial.begin(115200);
+  while (!Serial); // Wait for Serial Monitor to connect
+
   Wire.begin();
-  Serial.println();
-  
-  //GPS
-  if (myGNSS.begin() == false) {
-    Serial.println(F("u-blox GNSS not detected at default I2C address. Please check wiring. Freezing."));
+  Serial.println("\n--- Satellite Tracking Initialization ---");
+
+  setupGPS();
+
+  if (!initializeSDCard()) {
+    Serial.println("SD Card initialization failed. Halting execution.");
     while (1);
   }
 
-  myGNSS.setI2COutput(COM_TYPE_UBX); // Set the I2C port to output UBX only (turn off NMEA noise)
-
-  // // Satellite TLE data
-  // char satname[] = "ONEWEB-0664";
-  // char tle_line1[] = "1 55824U 23029AE  24276.62216158  .00000045  00000+0  78711-4 0  9998";  //Line one from the TLE data
-  // char tle_line2[] = "2 55824  87.9273  38.3197 0001440 113.5941 246.5344 13.20770475 78960";  //Line two from the TLE data
-
-  /*Reference coordinates and TLE to test user and satellite pass over equator.
-  sat.site(0, -158, 120); //set site latitude[°], longitude[°] and altitude[m]
-
-  char satname[] = "Reference";
-  char tle_line1[] = "1 25544U 98067A   24276.37395833  .00047432  00000+0  83119-3 0  9996";  //Line one from the TLE data
-  char tle_line2[] = "2 25544  00.0000 144.4720 0000000  54.4438 303.9262 15.50074020475160";  //Line two from the TLE data
-  */
-  
-  //SD card 
-  // wait for Serial Monitor to connect. Needed for native USB port boards only:
-  while (!Serial);
-  Serial.print("Initializing SD card...");
-  if (!SD.begin(chipSelect)) {
-    Serial.println("initialization failed!");
-    Serial.println("DEBUG: Check SD card connection and CS_PIN definition");
-    while (1);
-  }
-  Serial.println("initialization done.");
-
-  File tleFile = SD.open("tle.txt");
-  if (tleFile) {
-    String satname = tleFile.readStringUntil('\n');
-    String tle_line1 = tleFile.readStringUntil('\n');
-    String tle_line2 = tleFile.readStringUntil('\n');
-
-    satname.trim();
-    tle_line1.trim();
-    tle_line2.trim();
-
-    tleFile.close();
-    Serial.println("DEBUG: TLE data read and file closed");
-
-    Serial.println("DEBUG: Satellite name: " + satname);
-    Serial.println("DEBUG: TLE Line 1: " + tle_line1);
-    Serial.println("DEBUG: TLE Line 2: " + tle_line2);
-
-    Serial.println("DEBUG: Length of satname: " + String(satname.length()));
-    Serial.println("DEBUG: Length of tle_line1: " + String(tle_line1.length()));
-    Serial.println("DEBUG: Length of tle_line2: " + String(tle_line2.length()));
-
-    char tle_line1_char[70];
-    char tle_line2_char[70];
-    tle_line1.toCharArray(tle_line1_char, sizeof(tle_line1_char));
-    tle_line2.toCharArray(tle_line2_char, sizeof(tle_line2_char));
-
-    if (sat.init(satname.c_str(), tle_line1_char, tle_line2_char)) {
-      Serial.println("DEBUG: Satellite parameters initialized successfully");
-    } else {
-      Serial.println("ERROR: Failed to initialize satellite parameters");
-      while(1);
-    }   
-
-  // Display TLE epoch time
-  double jdC = sat.satrec.jdsatepoch;
-  invjday(jdC, timezone, true, year, mon, day, hr, minute, sec);
-  Serial.println("Epoch: " + String(day) + '/' + String(mon) + '/' + String(year) + ' ' + String(hr) + ':' + String(minute) + ':' + String(sec));
-  Serial.println();
-  } else {
-    Serial.println("Error opening tle.txt for satellite initialization");
+  if (!loadTLEFromSD()) {
+    Serial.println("Failed to load TLE data. Halting execution.");
     while (1);
   }
 
-  // Start the TickTwo timer
-  timer.start(); 
+  // Timer is already initialized globally with the callback
+  timer.start();
+
+  Serial.println("--- Initialization Complete ---\n");
 }
 
+// -------------------- Main Loop --------------------
 void loop() {
-  // If continueRunning is false, stop the loop
-  if (!continueRunning) {
+  if (!isRunning) {
     return;
   }
 
-  // Update the TickTwo timer and find the satellite
-  timer.update(); 
-  sat.findsat(unixtime); // Update satellite position at unixtime
-  framerate += 1; // Shows how many time sat.findsat(unixtime) is called within each 1000 ms interval 
+  timer.update();
+  satellite.findsat(unixTime);
+  frameRate++;
+}
+
+// -------------------- Function Implementations --------------------
+
+// Initialize GPS Module
+void setupGPS() {
+  if (!gnss.begin()) {
+    Serial.println(F("u-blox GNSS not detected. Please check wiring. Halting execution."));
+    while (1);
+  }
+  gnss.setI2COutput(COM_TYPE_UBX); // Set I2C port to output UBX only
+  Serial.println("GPS module initialized successfully.");
+}
+
+// Initialize SD Card
+bool initializeSDCard() {
+  Serial.print("Initializing SD card...");
+  if (!SD.begin(SD_CS_PIN)) {
+    Serial.println(" Initialization failed!");
+    Serial.println("DEBUG: Check SD card connection and CS_PIN definition.");
+    return false;
+  }
+  Serial.println(" Initialization done.");
+  return true;
+}
+
+// Load TLE Data from SD Card
+bool loadTLEFromSD() {
+  File tleFile = SD.open(TLE_FILE_NAME);
+  if (!tleFile) {
+    Serial.println("Error opening " + String(TLE_FILE_NAME) + " for satellite initialization.");
+    return false;
+  }
+
+  String satName = tleFile.readStringUntil('\n');
+  String tleLine1 = tleFile.readStringUntil('\n');
+  String tleLine2 = tleFile.readStringUntil('\n');
+
+  tleFile.close();
+  Serial.println("TLE data read and file closed.");
+
+  // Trim newline and carriage return characters
+  satName.trim();
+  tleLine1.trim();
+  tleLine2.trim();
+
+  Serial.println("Satellite Name: " + satName);
+  Serial.println("TLE Line 1: " + tleLine1);
+  Serial.println("TLE Line 2: " + tleLine2);
+
+  // Convert TLE lines to C-style strings
+  char tleLine1Char[130]; // Adjusted size based on library expectation
+  char tleLine2Char[130];
+  tleLine1.toCharArray(tleLine1Char, sizeof(tleLine1Char));
+  tleLine2.toCharArray(tleLine2Char, sizeof(tleLine2Char));
+
+  // Initialize Satellite with TLE Data
+  initializeSatellite(satName, tleLine1Char, tleLine2Char);
+
+  return true;
+}
+
+// Initialize Satellite Object
+void initializeSatellite(const String& satName, char* tleLine1Char, char* tleLine2Char) {
+  if (!satellite.init(satName.c_str(), tleLine1Char, tleLine2Char)) {
+    Serial.println("ERROR: Failed to initialize satellite parameters.");
+    while (1);
+  }
+  Serial.println("Satellite parameters initialized successfully.");
+
+  // Display TLE Epoch Time
+  double jdEpoch = satellite.satrec.jdsatepoch;
+  invjday(jdEpoch, timezoneOffset, true, year, month, day, hour, minute, secondDouble);
+
+  // Replace Serial.printf with buffer and Serial.println
+  char buffer[100];
+  snprintf(buffer, sizeof(buffer), "Epoch: %02d/%02d/%04d %02d:%02d:%.2f\n\n", day, month, year, hour, minute, secondDouble);
+  Serial.print(buffer);
+}
+
+// Timer Callback Function - Executes Every Second
+void onSecondTick() {
+  frameRate = 0; // Reset frame rate counter
+
+  // Update GPS Data
+  printGPSData();
+
+  // Convert Satellite Julian Date to Calendar Date
+  invjday(satellite.satJd, timezoneOffset, true, year, month, day, hour, minute, secondDouble);
+  
+  // Replace Serial.printf with buffer and Serial.println
+  char buffer[100];
+  snprintf(buffer, sizeof(buffer), "Satellite Time: %02d/%02d/%04d %02d:%02d:%.2f\n", day, month, year, hour, minute, secondDouble);
+  Serial.print(buffer);
+
+  // Print Satellite Data
+  printSatelliteData();
+
+  // Check and Display Trackable Status
+  checkTrackable();
+
+  Serial.println(); // Blank line for readability
+}
+
+// Print GPS Information
+void printGPSData() {
+  if (gnss.getGnssFixOk()) {
+    unixTime = gnss.getUnixEpoch();
+    double latitude = gnss.getLatitude() / 1e7;
+    double longitude = gnss.getLongitude() / 1e7;
+    double altitude = gnss.getAltitude() / 1e3; // Convert to meters
+
+    satellite.site(latitude, longitude, altitude); // Update site location
+
+    Serial.println("---- GPS Data ----");
+    // Replace Serial.printf with buffer
+    char buffer[100];
+    snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f m, SIV: %d", latitude, longitude, altitude, gnss.getSIV());
+    Serial.println(buffer);
+
+    // Print GPS Time
+    Serial.print("GPS Time: ");
+    snprintf(buffer, sizeof(buffer), "%lu %04d-%02d-%02d %02d:%02d:%.2f\n",
+             gnss.getUnixEpoch(),
+             gnss.getYear(),
+             gnss.getMonth(),
+             gnss.getDay(),
+             gnss.getHour(),
+             gnss.getMinute(),
+             gnss.getSecond());
+    Serial.print(buffer);
+  } else {
+    Serial.println("GPS Status: Waiting for fix...");
+  }
+}
+
+// Print Satellite Information
+void printSatelliteData() {
+  Serial.println("---- Satellite Data ----");
+  // Replace Serial.printf with buffer
+  char buffer[150];
+  snprintf(buffer, sizeof(buffer), "Azimuth: %.2f°, Elevation: %.2f°, Distance: %.2f km",
+           satellite.satAz, satellite.satEl, satellite.satDist);
+  Serial.println(buffer);
+  
+  snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f km",
+           satellite.satLat, satellite.satLon, satellite.satAlt);
+  Serial.println(buffer);
+
+  // Visibility Status
+  switch (satellite.satVis) {
+    case -2:
+      Serial.println("Visibility: Under Horizon");
+      break;
+    case -1:
+      Serial.println("Visibility: Daylight");
+      break;
+    default:
+      snprintf(buffer, sizeof(buffer), "Visibility: %d", satellite.satVis);
+      Serial.println(buffer);
+      break;
+  }
+
+  snprintf(buffer, sizeof(buffer), "Frame Rate: %d calculations/sec", frameRate);
+  Serial.println(buffer);
+}
+
+// Check if Satellite is Trackable (Elevation > 25 Degrees)
+void checkTrackable() {
+  char buffer[100];
+  if (satellite.satEl > TRACKABLE_ELEVATION) {
+    snprintf(buffer, sizeof(buffer), "Status: Satellite elevation is above %.0f degrees.", TRACKABLE_ELEVATION);
+  } else {
+    snprintf(buffer, sizeof(buffer), "Status: Satellite elevation is below %.0f degrees.", TRACKABLE_ELEVATION);
+  }
+  Serial.println(buffer);
 }
