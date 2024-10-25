@@ -1,5 +1,5 @@
 /*
-  Satellite Tracking
+  Satellite Tracking 
 
   This code tracks a satellite using its TLE (Two-Line Element) data with the SGP4 algorithm
   and TickTwo library. It calculates and outputs azimuth and elevation angles every second,
@@ -9,8 +9,8 @@
   ---------------------
   Adafruit 254 MicroSD Card Breakout:
     - 5V  -> 5V on Arduino
-    - GND  -> GND on Arduino
-    - CLK  -> D13
+    - GND -> GND on Arduino
+    - CLK -> D13
     - DO   -> D12
     - DI   -> D11
     - CS   -> D10
@@ -28,20 +28,22 @@
 #include <Wire.h>
 #include <SD.h>
 #include <SPI.h>
+#include <math.h>
 
 // -------------------- Constants and Definitions --------------------
 const int SD_CS_PIN = 10;                     // Chip Select pin for SD card
 const unsigned long TIMER_INTERVAL_MS = 1000; // Timer interval in milliseconds
 const double TRACKABLE_ELEVATION = 25.0;      // Elevation threshold in degrees
-const char* TLE_FILE_NAME = "tle.txt";         // TLE data file name
+const char* TLE_FILE_NAME = "tle.txt";        // TLE data file name
+const unsigned long FIX_TIMEOUT = 3600000;    // 1 hour in milliseconds
+const float R_E_site = 6371.0; // Earth radius at observer's location in km
+const float R_E_sat = 6371.0;  // Earth radius at satellite's location in km
 
 // -------------------- Global Objects --------------------
 Sgp4 satellite;
 SFE_UBLOX_GNSS gnss;
 
-// Forward declaration of the callback function
 void onSecondTick();
-
 // Initialize TickTwo with the callback, interval, repeat count, and resolution
 TickTwo timer(onSecondTick, TIMER_INTERVAL_MS, 0, MILLIS);
 
@@ -49,28 +51,44 @@ TickTwo timer(onSecondTick, TIMER_INTERVAL_MS, 0, MILLIS);
 unsigned long unixTime = 0;
 int timezoneOffset = 0; // UTC
 int frameRate = 0;
-bool isRunning = true;
-
-// Date and Time Variables
 int year, month, day, hour, minute;
 double secondDouble;
+float r_ctheta, r_cm, altitude;
+
+// Timeout Tracking
+unsigned long startTime;
+
+struct XYCoordinates {
+  float xc;
+  float yc;
+};
+
+struct AngleResults {
+    float psi_d1;
+    float psi_d2;
+};
 
 // -------------------- Function Prototypes --------------------
 void setupGPS();
 bool initializeSDCard();
 bool loadTLEFromSD();
 void initializeSatellite(const String& satName, char* tleLine1Char, char* tleLine2Char);
-void printGPSData();
+double printGPSData();
 void printSatelliteData();
 void checkTrackable();
+float calculate_r_ctheta(float h_site, float h_sat, float theta);
+XYCoordinates calculateCentre(float r_ctheta, float r_cm, float phi);
+AngleResults calculateAngles(float xc, float yc, float r_ctheta, float phi);
 
 // -------------------- Setup Function --------------------
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(38400); 
   while (!Serial); // Wait for Serial Monitor to connect
 
   Wire.begin();
   Serial.println("\n--- Satellite Tracking Initialization ---");
+
+  startTime = millis(); // Initialize start time
 
   setupGPS();
 
@@ -84,27 +102,30 @@ void setup() {
     while (1);
   }
 
-  // Timer is already initialized globally with the callback
-  timer.start();
+  timer.start(); // Start timer 
 
   Serial.println("--- Initialization Complete ---\n");
 }
 
 // -------------------- Main Loop --------------------
 void loop() {
-  if (!isRunning) {
-    return;
-  }
-
   timer.update();
-  satellite.findsat(unixTime);
-  frameRate++;
+  
+  if (unixTime > 0) { // Proceed only if time is valid
+    satellite.findsat(unixTime); // Updates satellite properties based on unixTime
+    frameRate++; // Increment frame rate counter
+  } else if (millis() - startTime > FIX_TIMEOUT) {
+    Serial.println("Timeout: Proceeding with estimated time.");
+    unsigned long estimatedTime = millis() / 1000; // Estimate time in seconds
+    satellite.findsat(estimatedTime);
+  }
 }
 
 // -------------------- Function Implementations --------------------
 
 // Initialize GPS Module
 void setupGPS() {
+  Serial.println("Initializing GPS Module...");
   if (!gnss.begin()) {
     Serial.println(F("u-blox GNSS not detected. Please check wiring. Halting execution."));
     while (1);
@@ -118,7 +139,6 @@ bool initializeSDCard() {
   Serial.print("Initializing SD card...");
   if (!SD.begin(SD_CS_PIN)) {
     Serial.println(" Initialization failed!");
-    Serial.println("DEBUG: Check SD card connection and CS_PIN definition.");
     return false;
   }
   Serial.println(" Initialization done.");
@@ -129,35 +149,29 @@ bool initializeSDCard() {
 bool loadTLEFromSD() {
   File tleFile = SD.open(TLE_FILE_NAME);
   if (!tleFile) {
-    Serial.println("Error opening " + String(TLE_FILE_NAME) + " for satellite initialization.");
+    Serial.println("Error opening TLE file.");
     return false;
   }
 
   String satName = tleFile.readStringUntil('\n');
+  satName.trim(); // Trim trailing whitespace or newlines
   String tleLine1 = tleFile.readStringUntil('\n');
+  tleLine1.trim();
   String tleLine2 = tleFile.readStringUntil('\n');
+  tleLine2.trim();
 
   tleFile.close();
-  Serial.println("TLE data read and file closed.");
-
-  // Trim newline and carriage return characters
-  satName.trim();
-  tleLine1.trim();
-  tleLine2.trim();
 
   Serial.println("Satellite Name: " + satName);
   Serial.println("TLE Line 1: " + tleLine1);
   Serial.println("TLE Line 2: " + tleLine2);
 
   // Convert TLE lines to C-style strings
-  char tleLine1Char[130]; // Adjusted size based on library expectation
-  char tleLine2Char[130];
+  char tleLine1Char[130], tleLine2Char[130];
   tleLine1.toCharArray(tleLine1Char, sizeof(tleLine1Char));
   tleLine2.toCharArray(tleLine2Char, sizeof(tleLine2Char));
 
-  // Initialize Satellite with TLE Data
   initializeSatellite(satName, tleLine1Char, tleLine2Char);
-
   return true;
 }
 
@@ -167,15 +181,12 @@ void initializeSatellite(const String& satName, char* tleLine1Char, char* tleLin
     Serial.println("ERROR: Failed to initialize satellite parameters.");
     while (1);
   }
-  Serial.println("Satellite parameters initialized successfully.");
 
-  // Display TLE Epoch Time
   double jdEpoch = satellite.satrec.jdsatepoch;
   invjday(jdEpoch, timezoneOffset, true, year, month, day, hour, minute, secondDouble);
 
-  // Replace Serial.printf with buffer and Serial.println
   char buffer[100];
-  snprintf(buffer, sizeof(buffer), "Epoch: %02d/%02d/%04d %02d:%02d:%.2f\n\n", day, month, year, hour, minute, secondDouble);
+  snprintf(buffer, sizeof(buffer), "Epoch: %02d/%02d/%04d %02d:%02d:%.2f\n", day, month, year, hour, minute, secondDouble);
   Serial.print(buffer);
 }
 
@@ -183,96 +194,139 @@ void initializeSatellite(const String& satName, char* tleLine1Char, char* tleLin
 void onSecondTick() {
   frameRate = 0; // Reset frame rate counter
 
-  // Update GPS Data
   printGPSData();
-
-  // Convert Satellite Julian Date to Calendar Date
   invjday(satellite.satJd, timezoneOffset, true, year, month, day, hour, minute, secondDouble);
-  
-  // Replace Serial.printf with buffer and Serial.println
+
   char buffer[100];
   snprintf(buffer, sizeof(buffer), "Satellite Time: %02d/%02d/%04d %02d:%02d:%.2f\n", day, month, year, hour, minute, secondDouble);
   Serial.print(buffer);
 
-  // Print Satellite Data
   printSatelliteData();
-
-  // Check and Display Trackable Status
   checkTrackable();
+  Serial.println();
 
-  Serial.println(); // Blank line for readability
+  float h_site = altitude; 
+  float h_sat = satellite.satAlt;
+  float theta = 30; //satellite.satEl
+  float phi = satellite.satAz;
+  float theta_min = TRACKABLE_ELEVATION;
+
+  r_ctheta = calculate_r_ctheta(h_site, h_sat, theta);
+  r_cm = calculate_r_ctheta(h_site, h_sat, theta_min);
+  XYCoordinates coords = calculateCentre(r_ctheta, r_cm, phi);
+  AngleResults angles = calculateAngles(coords.xc, coords.yc, r_ctheta, phi);
 }
 
 // Print GPS Information
-void printGPSData() {
+double printGPSData() {
   if (gnss.getGnssFixOk()) {
     unixTime = gnss.getUnixEpoch();
     double latitude = gnss.getLatitude() / 1e7;
     double longitude = gnss.getLongitude() / 1e7;
-    double altitude = gnss.getAltitude() / 1e3; // Convert to meters
+    altitude = gnss.getAltitude() / 1e3; 
 
-    satellite.site(latitude, longitude, altitude); // Update site location
+    satellite.site(latitude, longitude, altitude);
 
-    Serial.println("---- GPS Data ----");
-    // Replace Serial.printf with buffer
     char buffer[100];
     snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f m, SIV: %d", latitude, longitude, altitude, gnss.getSIV());
     Serial.println(buffer);
 
-    // Print GPS Time
-    Serial.print("GPS Time: ");
-    snprintf(buffer, sizeof(buffer), "%lu %04d-%02d-%02d %02d:%02d:%.2f\n",
-             gnss.getUnixEpoch(),
-             gnss.getYear(),
-             gnss.getMonth(),
-             gnss.getDay(),
-             gnss.getHour(),
-             gnss.getMinute(),
-             gnss.getSecond());
+    snprintf(buffer, sizeof(buffer), "GPS Time: %lu %04d-%02d-%02d %02d:%02d:%.2f\n", gnss.getUnixEpoch(), gnss.getYear(), gnss.getMonth(), gnss.getDay(), gnss.getHour(), gnss.getMinute(), gnss.getSecond());
     Serial.print(buffer);
   } else {
     Serial.println("GPS Status: Waiting for fix...");
   }
+
+  return altitude;
 }
 
 // Print Satellite Information
 void printSatelliteData() {
-  Serial.println("---- Satellite Data ----");
-  // Replace Serial.printf with buffer
   char buffer[150];
-  snprintf(buffer, sizeof(buffer), "Azimuth: %.2f°, Elevation: %.2f°, Distance: %.2f km",
-           satellite.satAz, satellite.satEl, satellite.satDist);
-  Serial.println(buffer);
-  
-  snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f km",
-           satellite.satLat, satellite.satLon, satellite.satAlt);
+  snprintf(buffer, sizeof(buffer), "Azimuth: %.2f°, Elevation: %.2f°, Distance: %.2f km", satellite.satAz, satellite.satEl, satellite.satDist);
   Serial.println(buffer);
 
-  // Visibility Status
+  snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f km", satellite.satLat, satellite.satLon, satellite.satAlt);
+  Serial.println(buffer);
+
+  const char* visibility;
   switch (satellite.satVis) {
-    case -2:
-      Serial.println("Visibility: Under Horizon");
-      break;
-    case -1:
-      Serial.println("Visibility: Daylight");
-      break;
-    default:
-      snprintf(buffer, sizeof(buffer), "Visibility: %d", satellite.satVis);
-      Serial.println(buffer);
-      break;
+    case -2: visibility = "Under Horizon"; break;
+    case -1: visibility = "Daylight"; break;
+    default: snprintf(buffer, sizeof(buffer), "Visibility: %d", satellite.satVis); visibility = buffer; break;
   }
-
+  Serial.println(visibility);
+  
   snprintf(buffer, sizeof(buffer), "Frame Rate: %d calculations/sec", frameRate);
   Serial.println(buffer);
 }
 
-// Check if Satellite is Trackable (Elevation > 25 Degrees)
+// Check if Satellite is Trackable (Elevation > TRACKABLE_ELEVATION)
 void checkTrackable() {
   char buffer[100];
-  if (satellite.satEl > TRACKABLE_ELEVATION) {
-    snprintf(buffer, sizeof(buffer), "Status: Satellite elevation is above %.0f degrees.", TRACKABLE_ELEVATION);
-  } else {
-    snprintf(buffer, sizeof(buffer), "Status: Satellite elevation is below %.0f degrees.", TRACKABLE_ELEVATION);
-  }
+  snprintf(buffer, sizeof(buffer), "Status: Satellite elevation is %s %.0f degrees.", (satellite.satEl > TRACKABLE_ELEVATION) ? "above" : "below", TRACKABLE_ELEVATION);
   Serial.println(buffer);
+}
+
+float calculate_r_ctheta(float h_site, float h_sat, float theta) {
+  float theta_rad = theta * M_PI / 180.0;
+  float alpha = asin((R_E_site + h_site) / (R_E_sat + h_sat) * sin(M_PI/2 + theta_rad));
+  float beta = M_PI/2 - theta_rad - alpha;
+  float r_l = (sin(beta) / sin(alpha)) * (R_E_site + h_site);
+  float r_ctheta = r_l * cos(theta_rad);
+
+  Serial.println("Geometry calculations:");
+  Serial.print("alpha = "); Serial.println(alpha * 180.0 / M_PI);
+  Serial.print("beta = "); Serial.println(beta * 180.0 / M_PI);
+  Serial.print("r_l = "); Serial.println(r_l);
+  Serial.print("r_ctheta = "); Serial.println(r_ctheta);
+
+  return r_ctheta;
+}
+
+XYCoordinates calculateCentre(float r_ctheta, float r_cm, float phi) {
+  float phi_rad = phi * M_PI / 180.0;
+  float eta = acos(r_ctheta / r_cm);
+  float xc = (r_cm / 2) * sin(phi_rad - eta);
+  float yc = (r_cm / 2) * cos(phi_rad - eta);
+
+  Serial.print("eta = "); Serial.println(eta * 180.0 / M_PI);
+  Serial.print("xc = "); Serial.println(xc);
+  Serial.print("yc = "); Serial.println(yc);
+
+  return {xc, yc};
+}
+
+
+AngleResults calculateAngles(float xc, float yc, float r_ctheta, float phi) {
+    float psi_d1 = atan2(xc, yc);
+    float psi_d1_degrees = psi_d1 * 180.0 / M_PI;
+    
+    // Normalize psi_d1 to be between 0 and 360 degrees
+    if (psi_d1_degrees < 0) {
+        psi_d1_degrees += 360.0;
+    }
+    
+    // Convert phi to radians
+    float phi_rad = phi * M_PI / 180.0;
+    
+    // Calculate delta_psi
+    float delta_psi = atan2((r_ctheta * cos(phi_rad) - yc), (r_ctheta * sin(phi_rad) - xc));
+    
+    // Convert delta_psi to degrees
+    float delta_psi_degrees = delta_psi * 180.0 / M_PI;
+    
+    // Calculate psi_d2
+    float psi_d2_degrees = delta_psi_degrees - psi_d1_degrees;
+    
+    // Normalize psi_d2 to be between 0 and 360 degrees
+    while (psi_d2_degrees < 0) psi_d2_degrees += 360.0;
+    while (psi_d2_degrees >= 360.0) psi_d2_degrees -= 360.0;
+
+    Serial.print("psi_d1: "); Serial.println(psi_d1_degrees);
+    Serial.print("delta_psi: "); Serial.println(delta_psi_degrees);
+    Serial.print("psi_d2: "); Serial.println(psi_d2_degrees);
+    Serial.println();
+
+    return {psi_d1_degrees, psi_d2_degrees};
 }
