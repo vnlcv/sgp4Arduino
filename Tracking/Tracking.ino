@@ -72,7 +72,7 @@ struct AngleResults {
 void setupGPS();
 bool initializeSDCard();
 bool loadTLEFromSD();
-void initializeSatellite(const String& satName, char* tleLine1Char, char* tleLine2Char);
+void initializeSatellite();
 double printGPSData();
 void printSatelliteData();
 void checkTrackable();
@@ -92,15 +92,17 @@ void setup() {
 
   setupGPS();
 
-  if (!initializeSDCard()) {
-    Serial.println("SD Card initialization failed. Halting execution.");
-    while (1);
-  }
+  // if (!initializeSDCard()) {
+  //   Serial.println("SD Card initialization failed. Halting execution.");
+  //   while (1);
+  // }
 
-  if (!loadTLEFromSD()) {
-    Serial.println("Failed to load TLE data. Halting execution.");
-    while (1);
-  }
+  // if (!loadTLEFromSD()) {
+  //   Serial.println("Failed to load TLE data. Halting execution.");
+  //   while (1);
+  // }
+
+  initializeSatellite();
 
   timer.start(); // Start timer 
 
@@ -134,50 +136,56 @@ void setupGPS() {
   Serial.println("GPS module initialized successfully.");
 }
 
-// Initialize SD Card
-bool initializeSDCard() {
-  Serial.print("Initializing SD card...");
-  if (!SD.begin(SD_CS_PIN)) {
-    Serial.println(" Initialization failed!");
-    return false;
-  }
-  Serial.println(" Initialization done.");
-  return true;
-}
+// // Initialize SD Card
+// bool initializeSDCard() {
+//   Serial.print("Initializing SD card...");
+//   if (!SD.begin(SD_CS_PIN)) {
+//     Serial.println(" Initialization failed!");
+//     return false;
+//   }
+//   Serial.println(" Initialization done.");
+//   return true;
+// }
 
-// Load TLE Data from SD Card
-bool loadTLEFromSD() {
-  File tleFile = SD.open(TLE_FILE_NAME);
-  if (!tleFile) {
-    Serial.println("Error opening TLE file.");
-    return false;
-  }
+// // Load TLE Data from SD Card
+// bool loadTLEFromSD() {
+//   File tleFile = SD.open(TLE_FILE_NAME);
+//   if (!tleFile) {
+//     Serial.println("Error opening TLE file.");
+//     return false;
+//   }
 
-  String satName = tleFile.readStringUntil('\n');
-  satName.trim(); // Trim trailing whitespace or newlines
-  String tleLine1 = tleFile.readStringUntil('\n');
-  tleLine1.trim();
-  String tleLine2 = tleFile.readStringUntil('\n');
-  tleLine2.trim();
+//   String satName = tleFile.readStringUntil('\n');
+//   satName.trim(); // Trim trailing whitespace or newlines
+//   String tleLine1 = tleFile.readStringUntil('\n');
+//   tleLine1.trim();
+//   String tleLine2 = tleFile.readStringUntil('\n');
+//   tleLine2.trim();
 
-  tleFile.close();
+//   tleFile.close();
 
-  Serial.println("Satellite Name: " + satName);
-  Serial.println("TLE Line 1: " + tleLine1);
-  Serial.println("TLE Line 2: " + tleLine2);
+//   Serial.println("Satellite Name: " + satName);
+//   Serial.println("TLE Line 1: " + tleLine1);
+//   Serial.println("TLE Line 2: " + tleLine2);
 
-  // Convert TLE lines to C-style strings
-  char tleLine1Char[130], tleLine2Char[130];
-  tleLine1.toCharArray(tleLine1Char, sizeof(tleLine1Char));
-  tleLine2.toCharArray(tleLine2Char, sizeof(tleLine2Char));
+//   // Convert TLE lines to C-style strings
+//   char tleLine1Char[130], tleLine2Char[130];
+//   tleLine1.toCharArray(tleLine1Char, sizeof(tleLine1Char));
+//   tleLine2.toCharArray(tleLine2Char, sizeof(tleLine2Char));
 
-  initializeSatellite(satName, tleLine1Char, tleLine2Char);
-  return true;
-}
+//   initializeSatellite(satName, tleLine1Char, tleLine2Char);
+//   return true;
+// }
 
 // Initialize Satellite Object
-void initializeSatellite(const String& satName, char* tleLine1Char, char* tleLine2Char) {
-  if (!satellite.init(satName.c_str(), tleLine1Char, tleLine2Char)) {
+void initializeSatellite() {
+  // Hardcoded TLE data for the ISS (ZARYA)
+  const char* satelliteName = "ONEWEB-0208";
+  char tleLine1[] = "1 48243U 21031AK  24298.74286871  .00000032  00000+0  51320-4 0  9995";
+  char tleLine2[] = "2 48243  87.9019  49.0995 0001636  94.3263 265.8054 13.14505755169424";
+
+  // Initialize satellite with hardcoded TLE data
+  if (!satellite.init(satelliteName, tleLine1, tleLine2)) {
     Serial.println("ERROR: Failed to initialize satellite parameters.");
     while (1);
   }
@@ -235,16 +243,43 @@ double printGPSData() {
     Serial.print(buffer);
   } else {
     Serial.println("GPS Status: Waiting for fix...");
+
+    // Set hardcoded coordinates when GPS is not available
+    double fallbackLatitude = 51.5752;   // Hardcoded Latitude
+    double fallbackLongitude = -1.3150;   // Hardcoded Longitude
+    altitude = 182.21;                    // Hardcoded altitude in meters
+
+    satellite.site(fallbackLatitude, fallbackLongitude, altitude); // Use fallback coordinates
+
+    Serial.println("Using fallback coordinates:");
+    char buffer[100];
+    snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f m", fallbackLatitude, fallbackLongitude, altitude);
+    Serial.println(buffer);
+    
+    // Use a hardcoded Unix Time when GPS is not available and increment it
+    static unsigned long hardcodedUnixTime = 1729860291; // Initial hardcoded Unix time
+    unixTime = hardcodedUnixTime; // Assign the hardcoded time
+    hardcodedUnixTime += TIMER_INTERVAL_MS / 1000; // Increment the hardcoded time by 1 second
+
+    // Print the hardcoded time
+    snprintf(buffer, sizeof(buffer), "Using hardcoded Unix Time: %lu (25/10/2024 12:00 PM UTC)", unixTime);
+    Serial.println(buffer);
   }
 
   return altitude;
 }
 
 // Print Satellite Information
+// Print Satellite Information
 void printSatelliteData() {
   char buffer[150];
   snprintf(buffer, sizeof(buffer), "Azimuth: %.2f°, Elevation: %.2f°, Distance: %.2f km", satellite.satAz, satellite.satEl, satellite.satDist);
   Serial.println(buffer);
+
+  // Send azimuth and elevation to computer
+  Serial.print(satellite.satAz); // Send azimuth
+  Serial.print(",");              // Comma as a separator
+  Serial.println(satellite.satEl); // Send elevation
 
   snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f km", satellite.satLat, satellite.satLon, satellite.satAlt);
   Serial.println(buffer);
