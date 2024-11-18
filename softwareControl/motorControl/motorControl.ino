@@ -2,9 +2,9 @@
 #include "Arduino_HS300x.h"
 
 // Motor pin definitions
-const int stepPin1 = 2;  //PUL -Pulse
-const int dirPin1 = 3; //DIR -Direction
-const int enPin1 = 4;  //ENA -Enable
+const int stepPin1 = 5;  //PUL -Pulse
+const int dirPin1 = 6; //DIR -Direction
+const int enPin1 = 7;  //ENA -Enable
 const int microstep = 4;
 const int pulse_rev = 200 * microstep;  // Steps for one full revolution
 const int magstep = (700 / microstep); // Delay between pulses
@@ -21,6 +21,9 @@ float psi_d1 = 0;
 
 void setup() {
   Serial.begin(9600);
+  delay(500);
+  Serial.print("Initial homingComplete: ");
+  Serial.println(homingComplete);
   initializeSensors();
   initializeMotorPins();
 }
@@ -42,20 +45,20 @@ void loop() {
   } else if (homingComplete && countingSteps) {
     calibration();
   } else {
-    // Control loop to move to target angle every 50 seconds
-    static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate >= 10000) {  // Update every 10 seconds
-      lastUpdate = millis();
+    // // Control loop to move to target angle every 50 seconds
+    // static unsigned long lastUpdate = 0;
+    // if (millis() - lastUpdate >= 10000) {  // Update every 10 seconds
+    //   lastUpdate = millis();
       
-      // Example to update target angle (psi_d1) randomly 
-      psi_d1 = int(psi_d1 + 85) % 360;  // Change target angle
-      Serial.print("New psi_d1: ");
-      Serial.println(psi_d1);
+    //   // Example to update target angle (psi_d1) randomly 
+    //   psi_d1 = int(psi_d1 + 85) % 360;  // Change target angle
+    //   Serial.print("New psi_d1: ");
+    //   Serial.println(psi_d1);
       
-      // Calculate target steps from current position
-      targetSteps = angleToSteps(psi_d1);
-      rotateToAngle(targetSteps);
-    }
+    //   // Calculate target steps from current position
+    //   targetSteps = angleToSteps(psi_d1);
+    //   rotateToAngle(targetSteps);
+    // }
   }
 }
 
@@ -119,15 +122,12 @@ void rotateMotor(int motorSteps) {  // Specify the number of steps to rotate
     delayMicroseconds(magstep);
     digitalWrite(stepPin1, LOW);
     delayMicroseconds(magstep);
-    
-    
   }
-  
-  // delay(100);  // Short delay between steps for sensor stability
 }
 
 // Homing process to find 0 degree notch
 void homing(){
+  Serial.println("Homing starting.");
   rotateMotor(1);  // Rotate one step at a time 
 
   // Read proximity sensor 
@@ -139,22 +139,22 @@ void homing(){
     // If proximity between 0 and 10 is detected, 0 degree notch detected
     if (proximity >= 0 && proximity <= 10) {
         homingComplete = true;  // Homing complete
-        Serial.println("Homing complete, starting 360° measurement");
+        Serial.println("Homing complete.");
         countingSteps = true;  // Start counting steps
         totalSteps = 0;  // Reset step count
         currentPosition = 0; // Set current position as 0 degree reference
-        
     }
   }
 }
 
 // Calibration to count steps for a full rotation
 void calibration(){
+  Serial.println("Calibration starting.");
   rotateMotor(1);  // Rotate one step at a time
   // Count the steps 
-        if (countingSteps) {
-          totalSteps++;
-        } 
+  if (countingSteps) {
+    totalSteps++;
+  } 
 
   // Read proximity sensor 
   if (APDS.proximityAvailable()) {
