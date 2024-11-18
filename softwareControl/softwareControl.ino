@@ -130,6 +130,8 @@ void checkTrackable();
 float calculate_r_ctheta(float h_site, float h_sat, float theta);
 XYCoordinates calculateCentre(float r_ctheta, float r_cm, float phi);
 AngleResults calculateAngles(float xc, float yc, float r_ctheta, float phi);
+AngleResults angles; 
+int psi_d1_degrees; 
 
 // -------------------- Setup Function --------------------
 void setup() {
@@ -191,16 +193,15 @@ void loop() {
   } else {
     // Control loop to move to target angle 
     static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate >= 10000) {  // Update every 10 seconds
+    if (millis() - lastUpdate >= TIMER_INTERVAL_MS) {  // Update every TIMER_INTERVAL_MS
       lastUpdate = millis();
       
-      // Example to update target angle (psi_d1) randomly 
-      psi_d1 = int(psi_d1_degrees) % 360;  // Change target angle
-      // Serial.print("New psi_d1: ");
-      // Serial.println(psi_d1);
+      psi_d1_degrees = int(angles.psi_d1) % 360;  // Change target angle
+      Serial.print("New psi_d1: ");
+      Serial.println(psi_d1_degrees);
       
       // Calculate target steps from current position
-      targetSteps = angleToSteps(psi_d1);
+      targetSteps = angleToSteps(psi_d1_degrees);
       rotateToAngle(targetSteps);
     }
   }
@@ -320,7 +321,7 @@ void rotateToAngle(int targetSteps) {
   }
 
   // Set direction pin
-  digitalWrite(dirPinTop, direction == 1 ? HIGH : LOW); // If direction == 1, set to HIGH; otherwise set to LOW
+  digitalWrite(dirPinBottom, direction == 1 ? HIGH : LOW); // If direction == 1, set to HIGH; otherwise set to LOW
   // Serial.print("Moving to ");
   // Serial.print(psi_d1);
   // Serial.println(" degrees.");
@@ -334,59 +335,72 @@ void rotateToAngle(int targetSteps) {
 
 // Rotates the motor by a number of steps
 void rotateMotor(int motorSteps) {  // Specify the number of steps to rotate
-  // digitalWrite(enPinTop, LOW);  // Enable motor
-  digitalWrite(dirPinTop, HIGH);  // Set direction
+  // digitalWrite(enPinBottom, LOW);  // Enable motor
+  digitalWrite(dirPinBottom, HIGH);  // Set direction
   
   for (int x = 0; x < motorSteps; x++) {
-    digitalWrite(stepPinTop, HIGH);
+    digitalWrite(stepPinBottom, HIGH);
     delayMicroseconds(magstep);
-    digitalWrite(stepPinTop, LOW);
+    digitalWrite(stepPinBottom, LOW);
     delayMicroseconds(magstep);
   }
 }
 
 // Homing process to find 0 degree notch
 void homing(){
-  rotateMotor(1);  // Rotate one step at a time 
+  digitalWrite(dirPinBottom, HIGH);  // Set direction
+  
+  while (!homingComplete) {
+    digitalWrite(stepPinBottom, HIGH);
+    delayMicroseconds(magstep);
+    digitalWrite(stepPinBottom, LOW);
+    delayMicroseconds(magstep);
 
-  // Read proximity sensor 
-  if (APDS.proximityAvailable()) {
-    proximity = APDS.readProximity(); 
-    // Serial.print("Proximity: ");
-    // Serial.println(proximity); 
+    // Read proximity sensor 
+    if (APDS.proximityAvailable()) {
+      proximity = APDS.readProximity(); 
+      Serial.print("Proximity: ");
+      Serial.println(proximity); 
 
-    // If proximity between 0 and 10 is detected, 0 degree notch detected
-    if (proximity >= 0 && proximity <= 10) {
-        homingComplete = true;  // Homing complete
-        // Serial.println("Homing complete.");
-        countingSteps = true;  // Start counting steps
-        totalSteps = 0;  // Reset step count
-        currentPosition = 0; // Set current position as 0 degree reference
+      // If proximity between 0 and 10 is detected, 0 degree notch detected
+      if (proximity == 0) {
+          homingComplete = true;  // Homing complete
+          Serial.println("Homing complete.");
+          countingSteps = true;  // Start counting steps
+          totalSteps = 0;  // Reset step count
+          currentPosition = 0; // Set current position as 0 degree reference
+          break;
+      }
     }
   }
 }
 
 // Calibration to count steps for a full rotation
 void calibration(){
-  rotateMotor(1);  // Rotate one step at a time
-  // Count the steps 
-  if (countingSteps) {
+  digitalWrite(dirPinBottom, HIGH);  // Set direction
+  
+  while (countingSteps) {
+    digitalWrite(stepPinBottom, HIGH);
+    delayMicroseconds(magstep);
+    digitalWrite(stepPinBottom, LOW);
+    delayMicroseconds(magstep);
     totalSteps++;
-  } 
+   
+    // Read proximity sensor 
+    if (APDS.proximityAvailable()) {
+      proximity = APDS.readProximity(); 
+      Serial.print("Proximity: ");
+      Serial.println(proximity); 
 
-  // Read proximity sensor 
-  if (APDS.proximityAvailable()) {
-    proximity = APDS.readProximity(); 
-    // Serial.print("Proximity: ");
-    // Serial.println(proximity); 
-
-    // If proximity between 0 and 10 is detected, full revolution completed
-    if (totalSteps >= 3000 && proximity >= 0 && proximity <= 10) {
-      countingSteps = false;  // Stop counting steps
-      // digitalWrite(enPinTop, HIGH);  // Disable motor
-      // Serial.println("Full revolution complete");
-      // Serial.print("Total steps for 360° rotation: ");
-      // Serial.println(totalSteps);
+      // If proximity between 0 and 10 is detected, full revolution completed
+      if (totalSteps >= 3000 && proximity == 0) {
+        countingSteps = false;  // Stop counting steps
+        // digitalWrite(enPinBottom, HIGH);  // Disable motor
+        Serial.println("Full revolution complete");
+        Serial.print("Total steps for 360° rotation: ");
+        Serial.println(totalSteps);
+        break;
+      }
     }
   }
 }
@@ -430,14 +444,14 @@ void onSecondTick() {
 
   float h_site = altitude; 
   float h_sat = satellite.satAlt;
-  float theta = 30; //satellite.satEl
+  float theta = satellite.satEl;
   float phi = satellite.satAz;
   float theta_min = TRACKABLE_ELEVATION;
 
   r_ctheta = calculate_r_ctheta(h_site, h_sat, theta);
   r_cm = calculate_r_ctheta(h_site, h_sat, theta_min);
   XYCoordinates coords = calculateCentre(r_ctheta, r_cm, phi);
-  AngleResults angles = calculateAngles(coords.xc, coords.yc, r_ctheta, phi);
+  angles = calculateAngles(coords.xc, coords.yc, r_ctheta, phi);
   
   if (stopExecution) {
     // Serial.println("Execution halted.");

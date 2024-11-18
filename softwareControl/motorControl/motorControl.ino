@@ -21,7 +21,8 @@ float psi_d1 = 0;
 
 void setup() {
   Serial.begin(9600);
-  delay(500);
+  delay(10000);
+  Serial.println("started");
   Serial.print("Initial homingComplete: ");
   Serial.println(homingComplete);
   initializeSensors();
@@ -45,20 +46,20 @@ void loop() {
   } else if (homingComplete && countingSteps) {
     calibration();
   } else {
-    // // Control loop to move to target angle every 50 seconds
-    // static unsigned long lastUpdate = 0;
-    // if (millis() - lastUpdate >= 10000) {  // Update every 10 seconds
-    //   lastUpdate = millis();
+    // Control loop to move to target angle every 50 seconds
+    static unsigned long lastUpdate = 0;
+    if (millis() - lastUpdate >= 10000) {  // Update every 10 seconds
+      lastUpdate = millis();
       
-    //   // Example to update target angle (psi_d1) randomly 
-    //   psi_d1 = int(psi_d1 + 85) % 360;  // Change target angle
-    //   Serial.print("New psi_d1: ");
-    //   Serial.println(psi_d1);
+      // Example to update target angle (psi_d1) randomly 
+      psi_d1 = int(psi_d1 + 85) % 360;  // Change target angle
+      Serial.print("New psi_d1: ");
+      Serial.println(psi_d1);
       
-    //   // Calculate target steps from current position
-    //   targetSteps = angleToSteps(psi_d1);
-    //   rotateToAngle(targetSteps);
-    // }
+      // Calculate target steps from current position
+      targetSteps = angleToSteps(psi_d1);
+      rotateToAngle(targetSteps);
+    }
   }
 }
 
@@ -137,7 +138,7 @@ void homing(){
     Serial.println(proximity); 
 
     // If proximity between 0 and 10 is detected, 0 degree notch detected
-    if (proximity >= 0 && proximity <= 10) {
+    if (proximity == 0) {
         homingComplete = true;  // Homing complete
         Serial.println("Homing complete.");
         countingSteps = true;  // Start counting steps
@@ -163,7 +164,7 @@ void calibration(){
     Serial.println(proximity); 
 
     // If proximity between 0 and 10 is detected, full revolution completed
-    if (totalSteps >= 100 && proximity >= 0 && proximity <= 10) {
+    if (totalSteps >= 3000 && proximity == 0) {
       countingSteps = false;  // Stop counting steps
       // digitalWrite(enPin1, HIGH);  // Disable motor
       Serial.println("Full revolution complete");
