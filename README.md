@@ -6,6 +6,8 @@ softwareControl.ino - This code tracks a satellite using its TLE (Two-Line Eleme
   GPS module is setup and uses fallback coordinates and Unix time if no GPS fix is available. 
   This ensures continuous operation even without a GPS signal.
 
+  The bottom disc uses a proximity sensor for calibration whereas the top disc doesn't calibrate or rotate.
+
   Hardware Connections:
   ---------------------
   Adafruit 254 MicroSD Card Breakout:
@@ -31,6 +33,10 @@ softwareControl.ino - This code tracks a satellite using its TLE (Two-Line Eleme
     - Pulse  -> D5 (purple)
     - Direction -> D6 (orange)
     - Enable -> D7 (yellow)
+
+softwareControlDemo.ino - Simialr to softwareControl.ino but the bottom disc uses a proximity sensor and 
+top disc assumes that current position is home and calibration has same number of steps. 
+Both bottom and top disc rotates.
 
 gui.py - This code reads elevation and azimuth from the Serial communication to display a Skyplot of satellites.
 
