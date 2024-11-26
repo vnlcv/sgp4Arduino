@@ -10,7 +10,7 @@ import math
 import numpy as np
 
 # Set up serial parameters
-SERIAL_PORT = 'COM7'  
+SERIAL_PORT = 'COM6'  
 BAUD_RATE = 9600              
 
 # Initialize lists to store data for plotting
@@ -42,9 +42,9 @@ scatter1 = ax1.scatter([], [], c='blue')
 
 # Function to update each subplot with new data
 def update_plot(frame):
-    mask = np.array(ele_degrees) > 0
-
-    ax1.scatter(np.radians(np.array(azi_degrees)[mask]), np.array(ele_degrees)[mask], c='blue')
+    # mask = np.array(ele_degrees) > 0
+    if (len(azi_degrees) == len(ele_degrees)):
+        ax1.scatter(np.radians(np.array(azi_degrees)), np.array(ele_degrees), c='blue')
 
     # Update the table
     for item in table.get_children():
@@ -65,14 +65,15 @@ def read_serial():
             if line:
                 try:
                     line = line.split(",")
-                    print(line)
+                    # print(line)
                     if len(line) >= 2:
                         if iter >= 2:
                             azi_value = float(line[0])
                             ele_value = float(line[1])
-                            print(azi_value, ele_value)
+                            # print(azi_value, ele_value)
                             azi_degrees.append(azi_value)
                             ele_degrees.append(ele_value)
+                            print(azi_value, ele_value,len(azi_degrees), len(ele_degrees))
                         iter += 1
                 except ValueError:
                     print("Invalid data format")
