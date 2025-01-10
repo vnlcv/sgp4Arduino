@@ -10,7 +10,7 @@ import math
 import numpy as np
 
 # Set up serial parameters
-SERIAL_PORT = 'COM6'  
+SERIAL_PORT = 'COM5'  
 BAUD_RATE = 9600              
 
 # Initialize lists to store data for plotting
@@ -117,9 +117,12 @@ serial_thread.start()
 def safe_shutdown():
     global running
     running = False
-    ser.close()
     root.quit()
     root.destroy()
+    ser.close()
+
+
+tk.Button(root, text="Quit",command=safe_shutdown).pack()
 
 # Catch Ctrl+C for safe shutdown
 def on_close():
