@@ -46,7 +46,7 @@
 #include "Arduino_HS300x.h"
 
 // -------------------- Constants and Definitions --------------------
-const int scale = 1; 
+const int scale = 5; 
 // const int SD_CS_PIN = 10;                     // Chip Select pin for SD card
 const unsigned long TIMER_INTERVAL_MS = 5; // Timer interval in milliseconds
 const double TRACKABLE_ELEVATION = 25.0;      // Elevation threshold in degrees
