@@ -60,6 +60,9 @@ float altitude = 182.21;                      // Fallback Altitude in meters
 static unsigned long hardcodedUnixTime = 1731334682; // Fallback Unix time
 unsigned long next_unixtime = hardcodedUnixTime + 1;
 
+// I2C parameters
+#define SLAVE_ADDRESS 8
+
 // Hardcoded TLE data
 const char* satelliteName = "ONEWEB-0352";
 char tleLine1[] = "1 49216U 21083AG  24316.03750046 -.00000056  00000+0 -18780-3 0  9996";
@@ -85,14 +88,15 @@ const int microstep = 4;
 const int pulse_rev = 800;  // Steps for one full revolution
 const int magstep = (600 / microstep); // Delay between pulses
 
-int totalSteps = 0;  
+int totalStepsd1 = 0;  
+int totalStepsd2 = 0; 
 bool homingComplete = false; 
 bool countingSteps = false; 
 int proximity = 0;
 int currentPositionBottom = 0;        // Current angle position in steps
 int currentPositionTop = 0; 
-int targetStepsd1 = 0;            // Target position in steps
-int targetStepsd2 = 0;  
+// int targetStepsd1 = 0;            // Target position in steps
+// int targetStepsd2 = 0;  
 enum Motor { BOTTOM, TOP };
 
 // -------------------- Global Objects --------------------
@@ -104,6 +108,107 @@ void update_unixtimes(unsigned long milliseconds, unsigned long *unix_before, un
   *unix_before = hardcodedUnixTime + dt; 
   *unix_after = next_unixtime + dt;
 }
+
+// I2C Functions
+
+void read_azi_ele_range(double *azi, double *ele, double *range) {
+  int32_t az_int, el_int; 
+  byte a1, b1, c1, d1, a2, b2, c2, d2; 
+  a1 = Wire.read();
+  b1 = Wire.read();
+  c1 = Wire.read();
+  d1 = Wire.read();
+  az_int = a1;
+  az_int = (az_int << 8) | b1;
+  az_int = (az_int << 8) | c1;
+  az_int = (az_int << 8) | d1;
+  *azi = az_int / 1e6;
+  a2 = Wire.read();
+  b2 = Wire.read();
+  c2 = Wire.read();
+  d2 = Wire.read();
+  el_int = a2;
+  el_int = (el_int << 8) | b2;
+  el_int = (el_int << 8) | c2;
+  el_int = (el_int << 8) | d2;
+  *ele = el_int / 1e6;
+  uint32_t bigNum;
+  byte a,b,c,d;
+  a = Wire.read();
+  b = Wire.read();
+  c = Wire.read();
+  d = Wire.read();
+  bigNum = a;
+  bigNum = (bigNum << 8) | b;
+  bigNum = (bigNum << 8) | c;
+  bigNum = (bigNum << 8) | d;
+  *range = bigNum / 1e2; 
+} 
+
+void write_unsigned_long(const unsigned long unix) {
+  uint8_t a = (unix >> 24) & 0xFF ; 
+  Wire.write(a);
+  uint8_t b = (unix >> 16) & 0xFF;
+  Wire.write(b);
+  uint8_t c = (unix >> 8) & 0xFF;
+  Wire.write(c);
+  uint8_t d = unix & 0xFF; 
+  Wire.write(d);
+}
+
+void send_unix_to_modem(const unsigned long t) {
+  // Update the unix times 
+  unsigned long unix_before = 1;
+  unsigned long unix_after = 1; 
+  update_unixtimes(t, &unix_before, &unix_after);
+  // Send via I2C
+  Wire.beginTransmission(SLAVE_ADDRESS);
+  write_unsigned_long(unix_before);
+  
+  // Wire.write((unix_before >> 24) & 0xFF); // Send the highest byte
+  // Wire.write((unix_before >> 16) & 0xFF); // Send the second byte
+  // Wire.write((unix_before >> 8) & 0xFF);  // Send the third byte
+  // Wire.write(unix_before & 0xFF);         // Send the lowest byte
+  write_unsigned_long(unix_after);
+  // Wire.write((unix_after >> 24) & 0xFF); // Send the highest byte
+  // Wire.write((unix_after >> 16) & 0xFF); // Send the second byte
+  // Wire.write((unix_after >> 8) & 0xFF);  // Send the third byte
+  // Wire.write(unix_after & 0xFF);         // Send the lowest byte
+  write_unsigned_long(t);
+  // Wire.write((t >> 24) & 0xFF); // Send the highest byte
+  // Wire.write((t >> 16) & 0xFF); // Send the second byte
+  // Wire.write((t >> 8) & 0xFF);  // Send the third byte
+  // Wire.write(t & 0xFF);         // Send the lowest byte
+}
+
+void read_target(uint16_t *target) {
+  byte a, b; 
+  uint16_t bigNum; 
+  a = Wire.read(); 
+  b = Wire.read(); 
+  bigNum = a;
+  bigNum = (bigNum << 8) | b; 
+  *target = bigNum;
+}
+
+bool request_data_from_modem(uint16_t *targetStepsd1, uint16_t *targetStepsd2,  double *azi, double *ele, double *range) {
+  Wire.requestFrom(SLAVE_ADDRESS,16); // Request 4 bytes back from slave
+  delay(20);
+  // Serial.print("Wire Available is ");
+  // Serial.println(Wire.available());
+  if(Wire.available() == 16) {
+    // Read target Steps
+    // uint16_t targetd1, targetd2; 
+    read_target(targetStepsd1);
+    read_target(targetStepsd2);
+    read_azi_ele_range(azi, ele, range);
+    if (*targetStepsd1 < 5000 && *targetStepsd2 < 5000) {
+      return 1; 
+    }
+  }
+  return 0; 
+}
+
 
 // void onSecondTick();
 // // Initialize TickTwo with the callback, interval, repeat count, and resolution
@@ -134,24 +239,8 @@ struct AngleResults {
 void setupGPS();
 bool initializeSDCard();
 bool loadTLEFromSD();
-void initializeSatellite();
 double printGPSData();
-void printSatelliteData();
-void checkTrackable();
-float calculate_r_ctheta(float h_site, float h_sat, float theta);
-XYCoordinates calculateCentre(float r_ctheta, float r_cm, float phi);
-AngleResults calculateAngles(float xc, float yc, float r_ctheta, float phi);
-AngleResults unixtime_to_angles(double *azi, double *ele, double *range);
-AngleResults angles; 
-int psi_d1_degrees; 
-static unsigned long lastUpdate = 0;
-int psi_d2_degrees; 
-static double find_milli_dt(const unsigned long mtime, const unsigned long unix_time) {
-  const int du = unix_time - hardcodedUnixTime;
-  const double dt = mtime - (du*1000.00);
-  return dt/1000.00;
-}
-
+static unsigned long lastUpdate = 0; 
 
 // -------------------- Setup Function --------------------
 void setup() {
@@ -174,8 +263,6 @@ void setup() {
   //   Serial.println("Failed to load TLE data. Halting execution.");
   //   while (1);
   // }
-
-  initializeSatellite();
   initializeSensors();
   initializeMotorPins();
   // Give it a satellite site
@@ -190,45 +277,6 @@ void loop() {
   const unsigned long t = scale * millis();
   unsigned long unix_before, unix_after; 
   update_unixtimes(t, &unix_before, &unix_after);
-  Serial.print("Unix Before is ");
-  Serial.print(unix_before);
-  Serial.print(" "); Serial.print(unix_after);
-
-  // Update Satellite Location
-  satellite.findsat(unix_before);
-  // Update your location
-  satellite.site(fallbackLatitude, fallbackLongitude, altitude);
-  // Switch satellite if required
-  checkTrackable();
-
-  // Find the satellite at the each time 
-  double azi_before, ele_before, azi_after, ele_after, range_before, range_after; 
-  AngleResults angles_before = unixtime_to_angles( &azi_before, &ele_before, &range_before);
-
-  satellite.findsat(unix_after);
-  AngleResults angles_after = unixtime_to_angles(&azi_after, &ele_after, &range_after);
-
-  // Interpolate to provide the right angles
-  const double dt = find_milli_dt(t, unix_before); 
-  // Serial.print("dt is ");Serial.print(dt);
-  const double azi = azi_before + (azi_after - azi_before) * dt;
-  const double ele = ele_before + (ele_after - ele_before) * dt;
-  const double range = range_before + (range_after - range_before) * dt; 
-  angles.psi_d1 = angles_before.psi_d1 + (angles_after.psi_d1-angles_before.psi_d1)*dt; 
-  angles.psi_d2 = angles_before.psi_d2 + (angles_after.psi_d2-angles_before.psi_d2)*dt; 
-  Serial.print(" Azi "); Serial.print(azi); Serial.print(" Ele "); Serial.print(ele); Serial.print(" Angle Psi_d1 "); 
-  Serial.print(angles.psi_d1);
-  Serial.print(" Angle Psi_d2 "); 
-  Serial.println(angles.psi_d2);
-  // // timer.update();
-  // if (unixTime > 0) { // Proceed only if time is valid
-  //   satellite.findsat(unixTime); // Updates satellite properties based on unixTime
-  //   frameRate++; // Increment frame rate counter
-  // } else if (millis() - startTime > FIX_TIMEOUT) {
-  //   // Serial.println("Timeout: Proceeding with estimated time.");
-  //   unsigned long estimatedTime = millis() / TIMER_INTERVAL_MS; // Estimate time in seconds
-  //   satellite.findsat(estimatedTime);
-  // }
 
   // float temperature = HS300x.readTemperature();
   // float humidity    = HS300x.readHumidity();
@@ -246,54 +294,39 @@ void loop() {
   } else if (homingComplete && countingSteps) {
     calibration();
   } else {
-    // Control loop to move to target angle 
-       
-    psi_d1_degrees = angles.psi_d1;  // Change target angle
-      // Serial.print("New psi_d1: ");
-      // Serial.println(psi_d1_degrees);
+    // Write to I2C
+    send_unix_to_modem(t);
+    // Send total steps as an integer 
+    Wire.write((totalStepsd1 >> 8) & 0xFF);  // Send the third byte
+    Wire.write(totalStepsd1 & 0xFF);         // Send the lowest byte
 
-    psi_d2_degrees = angles.psi_d2 ;  // Change target angle
-      // Serial.print("New psi_d2: ");
-      // Serial.println(psi_d2_degrees);
-      
-    // Calculate target steps from current position
-    targetStepsd1 = angleToSteps(psi_d1_degrees);
-    Serial.print("Target Steps ");
-    Serial.print(targetStepsd1);
-    rotateToAngle(targetStepsd1, BOTTOM);
-    Serial.print(" ");
-    targetStepsd2 = angleToSteps(psi_d2_degrees);
-    Serial.println(targetStepsd2);
-    rotateToAngle(targetStepsd2, TOP);
-    // if (millis() - lastUpdate >= 100) {  // Update every TIMER_INTERVAL_MS
-    //   lastUpdate = millis();
-    //   Serial.print(azi);Serial.print(",");Serial.print(ele);Serial.print(",");
-    //   Serial.print(angles.psi_d1);Serial.print(",");Serial.println( angles.psi_d2);
-    // }
+    Wire.write((totalStepsd2 >> 8) & 0xFF);  // Send the third byte
+    Wire.write(totalStepsd2 & 0xFF);         // Send the lowest byte
+    Wire.endTransmission(); // End transmission
+
+    // Read
+    double azi, ele, range; 
+    uint16_t targetStepsd1, targetStepsd2;
+    if (request_data_from_modem(&targetStepsd1, &targetStepsd2, &azi, &ele, &range)){
+      // Cast to integers
+      int target_d1 = (int)targetStepsd1; 
+      rotateToAngle(target_d1, BOTTOM, totalStepsd1);
+      int target_d2 = (int)targetStepsd2; 
+      rotateToAngle(target_d2, TOP, totalStepsd2);
+      if (millis() - lastUpdate > 100) {
+        lastUpdate = millis();
+        Serial.print(azi); Serial.print(","); Serial.print(ele); 
+        Serial.print(","); Serial.print(range);
+        Serial.print(","); 
+        Serial.print(target_d1);
+        Serial.print(","); 
+        Serial.println(target_d2);
+      }
+    }
   }
 }
 
 // -------------------- Function Implementations --------------------
-
-
-AngleResults unixtime_to_angles(double *azi, double *ele, double *range) {
-  // Get Satellite parameters
-  float h_site = altitude; 
-  float h_sat = satellite.satAlt;
-  float theta = satellite.satEl;
-  float phi = satellite.satAz;
-  *range = satellite.satDist;
-  *ele = theta; 
-  *azi = phi;
-  float theta_min = TRACKABLE_ELEVATION;
-
-  r_ctheta = calculate_r_ctheta(h_site, h_sat, theta);
-  r_cm = calculate_r_ctheta(h_site, h_sat, theta_min);
-  XYCoordinates coords = calculateCentre(r_ctheta, r_cm, phi);
-  return calculateAngles(coords.xc, coords.yc, r_ctheta, phi);
-}
-
-
 
 // Initialize GPS Module
 void setupGPS() {
@@ -347,24 +380,6 @@ void setupGPS() {
 //   return true;
 // }
 
-// Initialize Satellite Object
-void initializeSatellite() {
-  // Initialize satellite with hardcoded TLE data
-  if (!satellite.init(satelliteName, tleLine1, tleLine2)) {
-    // Serial.println("ERROR: Failed to initialize satellite parameters.");
-    while (1);
-  }
-
-  double jdEpoch = satellite.satrec.jdsatepoch;
-  invjday(jdEpoch, timezoneOffset, true, year, month, day, hour, minute, secondDouble);
-  
-
-  char buffer[100];
-  // snprintf(buffer, sizeof(buffer), "Epoch: %02d/%02d/%04d %02d:%02d:%.2f\n", day, month, year, hour, minute, secondDouble);
-  // Serial.print(buffer);
-}
-
-
 // Initializes motor control pins
 void initializeMotorPins() {
   pinMode(stepPinTop, OUTPUT);
@@ -390,17 +405,8 @@ void initializeSensors() {
   }
 }
 
-// Converts angle in degrees to steps based on 0-degree reference
-int angleToSteps(const double angle) {
-  const double angle_ratio = angle / 360.00; 
-  Serial.print("Angle Ratio is "); Serial.print(angle_ratio, 5);
-  const int r = angle_ratio * totalSteps; 
-  Serial.print(" r is "); Serial.println(r, 5);
-  return r;
-}
-
 // Rotates motor to the desired angle
-void rotateToAngle(int targetSteps, Motor motor) {
+void rotateToAngle(int targetSteps, Motor motor, int totalSteps) {
   int currentPosition = (motor == BOTTOM) ? currentPositionBottom : currentPositionTop;
   int stepDifference = targetSteps - currentPosition;
   int direction = (stepDifference >= 0) ? 1 : -1;   // If stepdifference >= 0, direction = 1, clockwise. If stepdifference < 0, direction = -1, anticlockwise. 
@@ -440,8 +446,8 @@ void rotateMotor(int motorSteps, Motor motor, int direction) {  // Specify the n
 
   // digitalWrite(enPinBottom, LOW);  // Enable motor
   // digitalWrite(dirPin, HIGH);  // Set direction
-  Serial.print("Commanding to move ");
-  Serial.println(motorSteps);
+  // Serial.print("Commanding to move ");
+  // Serial.println(motorSteps);
   for (int x = 0; x < motorSteps; x++) {
     digitalWrite(stepPin, HIGH);
     delayMicroseconds(magstep);
@@ -477,7 +483,8 @@ void homing(){
           homingComplete = true;  // Homing complete
           // Serial.println("Homing complete.");
           countingSteps = true;  // Start counting steps
-          totalSteps = 0;  // Reset step count
+          totalStepsd1 = 0;  // Reset step count
+          totalStepsd2 = 0;
           currentPositionBottom = 0; // Set current position as 0 degree reference
           currentPositionTop = 0;
           break;
@@ -500,7 +507,8 @@ void calibration(){
     delayMicroseconds(magstep);
     digitalWrite(stepPinTop, LOW);
     delayMicroseconds(magstep);
-    totalSteps++;
+    totalStepsd1++;
+    totalStepsd2++; 
    
     // Read proximity sensor 
     if (APDS.proximityAvailable()) {
@@ -509,7 +517,7 @@ void calibration(){
       // Serial.println(proximity); 
 
       // If proximity between 0 and 10 is detected, full revolution completed
-      if (totalSteps >= 3980 && proximity == 0) {
+      if (totalStepsd1 >= 3980 && proximity == 0) {
         countingSteps = false;  // Stop counting steps
         // digitalWrite(enPinBottom, HIGH);  // Disable motor
         // Serial.println("Full revolution complete");
@@ -518,62 +526,6 @@ void calibration(){
         break;
       }
     }
-  }
-}
-
-// Function to switch to TLE for ONEWEB-0150
-void switchTLE_OneWeb0150() {
-  if (!satellite.init("ONEWEB-0150", tleLine1_OneWeb0150, tleLine2_OneWeb0150)) {
-    // Serial.println("ERROR: Failed to initialize ONEWEB-0150 satellite parameters.");
-    while (1);  // Halt if initialization fails
-  }
-  // Serial.println("Switched to satellite ONEWEB-0150.");
-  // Serial.println("TLE Line 1: ");
-  // Serial.println(tleLine1_OneWeb0150);
-  // Serial.println("TLE Line 2: ");
-  // Serial.println(tleLine2_OneWeb0150);
-}
-
-// Function to switch to TLE for ONEWEB-0107
-void switchTLE_OneWeb0107() {
-  if (!satellite.init("ONEWEB-0107", tleLine1_OneWeb0107, tleLine2_OneWeb0107)) {
-    // Serial.println("ERROR: Failed to initialize ONEWEB-0107 satellite parameters.");
-    while (1);  // Halt if initialization fails
-  }
-  // Serial.println("Switched to satellite ONEWEB-0107.");
-}
-
-// Timer Callback Function - Executes Every Second
-void onSecondTick() {
-  frameRate = 0; // Reset frame rate counter7
-  // Serial.print("millis is ");
-  // Serial.println(millis());
-
-  printGPSData();
-  invjday(satellite.satJd, timezoneOffset, true, year, month, day, hour, minute, secondDouble);
-
-  char buffer[100];
-  // snprintf(buffer, sizeof(buffer), "Satellite Time: %02d/%02d/%04d %02d:%02d:%.2f\n", day, month, year, hour, minute, secondDouble);
-  // Serial.print(buffer);
-
-  printSatelliteData();
-  checkTrackable();
-  // Serial.println();
-
-  float h_site = altitude; 
-  float h_sat = satellite.satAlt;
-  float theta = satellite.satEl;
-  float phi = satellite.satAz;
-  float theta_min = TRACKABLE_ELEVATION;
-
-  r_ctheta = calculate_r_ctheta(h_site, h_sat, theta);
-  r_cm = calculate_r_ctheta(h_site, h_sat, theta_min);
-  XYCoordinates coords = calculateCentre(r_ctheta, r_cm, phi);
-  angles = calculateAngles(coords.xc, coords.yc, r_ctheta, phi);
-  
-  if (stopExecution) {
-    // Serial.println("Execution halted.");
-    while (1);  
   }
 }
 
@@ -608,113 +560,4 @@ double printGPSData() {
     // Serial.println(buffer);
   }
   return altitude;
-}
-
-// Print Satellite Information
-void printSatelliteData() {
-  // char buffer[150];
-  // snprintf(buffer, sizeof(buffer), "Azimuth: %.2f°, Elevation: %.2f°, Distance: %.2f km", satellite.satAz, satellite.satEl, satellite.satDist);
-  // Serial.println(buffer);
-
-  // Send azimuth and elevation to GUI
-  Serial.print(satellite.satAz);
-  Serial.print(",");              
-  Serial.println(satellite.satEl); 
-
-  // snprintf(buffer, sizeof(buffer), "Lat: %.6f°, Lon: %.6f°, Alt: %.2f km", satellite.satLat, satellite.satLon, satellite.satAlt);
-  // Serial.println(buffer);
-
-  // const char* visibility;
-  // switch (satellite.satVis) {
-  //   case -2: visibility = "Under Horizon"; break;
-  //   case -1: visibility = "Daylight"; break;
-  //   default: snprintf(buffer, sizeof(buffer), "Visibility: %d", satellite.satVis); visibility = buffer; break;
-  // }
-  // Serial.println(visibility);
-  
-  // snprintf(buffer, sizeof(buffer), "Frame Rate: %d calculations/sec", frameRate);
-  // Serial.println(buffer);
-}
-
-// Check if Satellite is Trackable (Elevation > TRACKABLE_ELEVATION)
-void checkTrackable() {
-  if (isFirstRead) {
-    isFirstRead = false; 
-    return; 
-  }
-  char buffer[100];
-  // snprintf(buffer, sizeof(buffer), "Status: Satellite elevation is %s %.0f degrees.", (satellite.satEl > TRACKABLE_ELEVATION) ? "above" : "below", TRACKABLE_ELEVATION);
-  // Serial.println(buffer);
-  if (satellite.satEl < TRACKABLE_ELEVATION + 0.5) {
-    if (strcmp(satellite.satName, "ONEWEB-0352") == 0) {
-      switchTLE_OneWeb0150(); // Switch to ONEWEB-0150 if below 25 degrees for ONEWEB-0352
-    } else if (strcmp(satellite.satName, "ONEWEB-0150") == 0) {
-      switchTLE_OneWeb0107(); // Switch to ONEWEB-0107 if below 25 degrees for ONEWEB-0150
-    } else if (strcmp(satellite.satName, "ONEWEB-0107") == 0) {
-      stopExecution = true; // Stop execution if below 25 degrees for ONEWEB-0107
-    }
-  }
-}
-
-float calculate_r_ctheta(float h_site, float h_sat, float theta) {
-  float theta_rad = theta * M_PI / 180.0;
-  float alpha = asin((R_E_site + h_site) / (R_E_sat + h_sat) * sin(M_PI/2 + theta_rad));
-  float beta = M_PI/2 - theta_rad - alpha;
-  float r_l = (sin(beta) / sin(alpha)) * (R_E_site + h_site);
-  float r_ctheta = r_l * cos(theta_rad);
-
-  // Serial.println("Geometry calculations:");
-  // Serial.print("alpha = "); Serial.println(alpha * 180.0 / M_PI);
-  // Serial.print("beta = "); Serial.println(beta * 180.0 / M_PI);
-  // Serial.print("r_l = "); Serial.println(r_l);
-  // Serial.print("r_ctheta = "); Serial.println(r_ctheta);
-
-  return r_ctheta;
-}
-
-XYCoordinates calculateCentre(float r_ctheta, float r_cm, float phi) {
-  float phi_rad = phi * M_PI / 180.0;
-  float eta = acos(r_ctheta / r_cm);
-  float xc = (r_cm / 2) * sin(phi_rad - eta);
-  float yc = (r_cm / 2) * cos(phi_rad - eta);
-
-  // Serial.print("eta = "); Serial.println(eta * 180.0 / M_PI);
-  // Serial.print("xc = "); Serial.println(xc);
-  // Serial.print("yc = "); Serial.println(yc);
-
-  return {xc, yc};
-}
-
-
-AngleResults calculateAngles(float xc, float yc, float r_ctheta, float phi) {
-    float psi_d1 = atan2(xc, yc);
-    float psi_d1_degrees = psi_d1 * 180.0 / M_PI;
-    
-    // Normalize psi_d1 to be between 0 and 360 degrees
-    if (psi_d1_degrees < 0) {
-        psi_d1_degrees += 360.0;
-    }
-    
-    // Convert phi to radians
-    float phi_rad = phi * M_PI / 180.0;
-    
-    // Calculate delta_psi
-    float delta_psi = atan2((r_ctheta * cos(phi_rad) - yc), (r_ctheta * sin(phi_rad) - xc));
-    
-    // Convert delta_psi to degrees
-    float delta_psi_degrees = delta_psi * 180.0 / M_PI;
-    
-    // Calculate psi_d2
-    float psi_d2_degrees = delta_psi_degrees - psi_d1_degrees;
-    
-    // Normalize psi_d2 to be between 0 and 360 degrees
-    while (psi_d2_degrees < 0) psi_d2_degrees += 360.0;
-    while (psi_d2_degrees >= 360.0) psi_d2_degrees -= 360.0;
-
-    // Serial.print("psi_d1: "); Serial.println(psi_d1_degrees);
-    // Serial.print("delta_psi: "); Serial.println(delta_psi_degrees);
-    // Serial.print("psi_d2: "); Serial.println(psi_d2_degrees);
-    // Serial.println();
-
-    return {psi_d1_degrees, psi_d2_degrees};
 }
